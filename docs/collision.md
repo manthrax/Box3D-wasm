@@ -283,6 +283,8 @@ a non-zero radius; a capsule is two points with a radius; a box is eight points
 with zero radius.
 
 ```c
+
+{% raw %}
 b3Vec3 proxyPoints[] = {{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}};
 
 b3ShapeCastInput input = {0};
@@ -291,7 +293,7 @@ input.proxy.count       = 2;
 input.proxy.radius      = 0.1f;
 input.translation       = (b3Vec3){0.0f, -5.0f, 0.0f};
 input.maxFraction       = 1.0f;
-
+{% endraw %}
 b3CastOutput output = b3ShapeCastHull(&myHull, &input);
 if (output.hit)
 {
