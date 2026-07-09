@@ -28,7 +28,7 @@ jobs:
         uses: mymindstorm/setup-emsdk@v14
 
       - name: Configure CMake (Wasm)
-        run: emcmake cmake -B build-box3d-wasm -DCMAKE_BUILD_TYPE=Release -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_WASM_MODULE=ON
+        run: emcmake cmake -B build-box3d-wasm -DCMAKE_BUILD_TYPE=Release -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_WASM_MODULE=ON -DBOX3D_EMSCRIPTEN_PTHREADS=ON
 
       - name: Build WASM Target
         run: cmake --build build-box3d-wasm --config Release

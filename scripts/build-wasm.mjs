@@ -64,6 +64,12 @@ async function copyArtifacts( sourceDir, destinationDir )
 {
 	await ensureDir( destinationDir );
 	const filenames = [ "box3d-raw.js", "box3d-raw.wasm" ];
+	try
+	{
+		await fs.access( path.join( sourceDir, "box3d-raw.worker.js" ) );
+		filenames.push( "box3d-raw.worker.js" );
+	}
+	catch ( _ ) {}
 
 	for ( const filename of filenames )
 	{
