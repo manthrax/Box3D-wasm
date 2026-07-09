@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.22)
 include(CMakeDependentOption)
 
 project(box3d
@@ -103,7 +103,7 @@ endif()
 # link them, otherwise wasm-ld rejects --shared-memory. Top level only, so a FetchContent
 # consumer keeps control of its own threading model.
 if (EMSCRIPTEN AND PROJECT_IS_TOP_LEVEL AND BOX3D_EMSCRIPTEN_PTHREADS)
-	set(EMSCRIPTEN_PTHREADS_COMPILER_FLAGS "-pthread -s USE_PTHREADS=1")
+	set(EMSCRIPTEN_PTHREADS_COMPILER_FLAGS "-pthread")
 	set(EMSCRIPTEN_PTHREADS_LINKER_FLAGS "${EMSCRIPTEN_PTHREADS_COMPILER_FLAGS} -s ALLOW_MEMORY_GROWTH")
 	string(APPEND CMAKE_C_FLAGS " ${EMSCRIPTEN_PTHREADS_COMPILER_FLAGS}")
 	string(APPEND CMAKE_CXX_FLAGS " ${EMSCRIPTEN_PTHREADS_COMPILER_FLAGS}")

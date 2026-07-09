@@ -42,7 +42,7 @@ target_link_libraries(box3d_wasm PRIVATE box3d)
 target_link_options(box3d_wasm PRIVATE
 	"--no-entry"
 	"SHELL:-sALLOW_MEMORY_GROWTH=1"
-	"SHELL:-sENVIRONMENT=web,worker,node"
+	"SHELL:-sENVIRONMENT=web,worker"
 	"SHELL:-sFILESYSTEM=0"
 	"SHELL:-sMODULARIZE=1"
 	"SHELL:-sEXPORT_ES6=1"
