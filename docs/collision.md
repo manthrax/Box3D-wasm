@@ -44,7 +44,9 @@ sphere.radius = 0.5f;
 You can also initialize a sphere inline:
 
 ```c
+{% raw %}
 b3Sphere sphere = { { 2.0f, 3.0f, 0.0f }, 0.5f };
+{% endraw %}
 ```
 
 ### Capsules
