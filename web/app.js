@@ -11,6 +11,10 @@ import { createRobustnessSamples } from "./samples/robustness.js";
 import { createWorldSamples } from "./samples/world.js";
 import { createStackingSamples } from "./samples/stacking.js";
 import { createShapeSamples } from "./samples/shapes.js";
+import { createBenchmarkSamples } from "./samples/benchmark.js";
+import { createRagdollSamples } from "./samples/ragdoll.js";
+import { createCharacterSamples } from "./samples/character.js";
+import { createGeometrySamples } from "./samples/geometry.js";
 
 if ( globalThis.__box3dWasmApp?.dispose instanceof Function )
 {
@@ -253,6 +257,46 @@ class PhysicsScene
 		} );
 	}
 
+	addCylinderShape( bodyHandle, options )
+	{
+		const cylinder = options.cylinder ?? { height: 1, radius: 0.5, yOffset: 0, sides: 12 };
+		const scale = options.scale ?? { x: 1, y: 1, z: 1 };
+		this.box3d.api.addCylinderShape( bodyHandle, options );
+		return this.addEntry( bodyHandle, {
+			kind: "cylinder",
+			bodyType: options.bodyType ?? this.box3d.BodyType.static,
+			geometrySignature: `cylinder-shape:${cylinder.height}:${cylinder.radius}:${cylinder.yOffset}:${scale.x}:${scale.y}:${scale.z}:${cylinder.sides ?? 12}`,
+			geometryFactory: () => this.createCylinderGeometry( cylinder, scale ),
+			localPosition: options.localPosition ?? null,
+			localRotation: options.localRotation ?? null,
+			color: options.color ?? DEFAULT_STATIC_COLOR,
+			roughness: options.roughness ?? 0.68,
+			metalness: options.metalness ?? 0.06,
+			castShadow: options.bodyType !== this.box3d.BodyType.static,
+			receiveShadow: true,
+		} );
+	}
+
+	addHullShape( bodyHandle, options )
+	{
+		const points = options.points ?? [];
+		const scale = options.scale ?? { x: 1, y: 1, z: 1 };
+		this.box3d.api.addHullShape( bodyHandle, options );
+		return this.addEntry( bodyHandle, {
+			kind: "hull",
+			bodyType: options.bodyType ?? this.box3d.BodyType.static,
+			geometrySignature: `hull-shape:${points.map( ( point ) => `${point.x},${point.y},${point.z}` ).join( ";" )}:${scale.x}:${scale.y}:${scale.z}`,
+			geometryFactory: () => this.createHullGeometry( points, scale ),
+			localPosition: options.localPosition ?? null,
+			localRotation: options.localRotation ?? null,
+			color: options.color ?? DEFAULT_STATIC_COLOR,
+			roughness: options.roughness ?? 0.7,
+			metalness: options.metalness ?? 0.04,
+			castShadow: options.bodyType !== this.box3d.BodyType.static,
+			receiveShadow: true,
+		} );
+	}
+
 	createCompoundBody( options )
 	{
 		const bodyType = options.type ?? this.box3d.BodyType.static;
@@ -275,6 +319,16 @@ class PhysicsScene
 		for ( const capsule of options.capsules ?? [] )
 		{
 			this.addCapsuleShape( bodyHandle, { ...capsule, bodyType } );
+		}
+
+		for ( const cylinder of options.cylinders ?? [] )
+		{
+			this.addCylinderShape( bodyHandle, { ...cylinder, bodyType } );
+		}
+
+		for ( const hull of options.hulls ?? [] )
+		{
+			this.addHullShape( bodyHandle, { ...hull, bodyType } );
 		}
 
 		for ( const mesh of options.meshes ?? [] )
@@ -671,6 +725,7 @@ class PhysicsScene
 			bodyType: renderDefinition.bodyType ?? this.box3d.BodyType.dynamic,
 			localPosition: renderDefinition.localPosition ?? null,
 			localRotation: renderDefinition.localRotation ?? null,
+			baseColor: renderDefinition.color ?? ( renderDefinition.bodyType === this.box3d.BodyType.static ? DEFAULT_STATIC_COLOR : DEFAULT_DYNAMIC_COLOR ),
 		};
 		bucket.entries[slot] = entry;
 		this.entries.push( entry );
@@ -698,7 +753,7 @@ class PhysicsScene
 
 		const geometry = this.getOrCreateGeometry( renderDefinition.geometrySignature, renderDefinition.geometryFactory );
 		const material = new THREE.MeshStandardMaterial( {
-			color: renderDefinition.color,
+			color: 0xffffff,
 			roughness: renderDefinition.roughness,
 			metalness: renderDefinition.metalness,
 		} );
@@ -947,6 +1002,24 @@ class PhysicsScene
 		{
 			entry.bucket.mesh.setMatrixAt( entry.slot, this.tempObject.matrix );
 		}
+
+		let colorHex = entry.baseColor;
+		if ( entry.bodyType === this.box3d.BodyType.dynamic )
+		{
+			const isAwake = this.box3d.api.isBodyAwake( entry.bodyHandle );
+			if ( isAwake === false )
+			{
+				colorHex = 0x5a656e;
+			}
+		}
+
+		const color = new THREE.Color( colorHex );
+		entry.bucket.mesh.setColorAt( entry.slot, color );
+		if ( entry.bucket.mesh.instanceColor != null )
+		{
+			entry.bucket.mesh.instanceColor.needsUpdate = true;
+		}
+
 		entry.bucket.dirty = true;
 	}
 }
@@ -958,7 +1031,66 @@ const pauseButton = document.querySelector( "#pause-button" );
 const stepButton = document.querySelector( "#step-button" );
 const statusLines = document.querySelector( "#status-lines" );
 const sampleDescription = document.querySelector( "#sample-description" );
+const customUiContainer = document.querySelector( "#custom-ui" );
 const raycaster = new THREE.Raycaster();
+
+class SimplePanel
+{
+	constructor( container )
+	{
+		this.container = container;
+	}
+
+	add( labelText, initialValue, options, onChange )
+	{
+		const row = document.createElement( "div" );
+		row.className = "ui-row";
+		row.style.display = "flex";
+		row.style.alignItems = "center";
+		row.style.justifyContent = "space-between";
+		row.style.marginTop = "8px";
+
+		const span = document.createElement( "span" );
+		span.textContent = labelText;
+		row.appendChild( span );
+
+		const control = document.createElement( "input" );
+		control.type = "range";
+		control.min = options.min ?? 0;
+		control.max = options.max ?? 100;
+		control.step = options.step ?? 1;
+		control.value = initialValue;
+		control.style.marginLeft = "8px";
+		control.style.flex = "1";
+
+		const valueLabel = document.createElement( "span" );
+		valueLabel.textContent = ` ${initialValue}`;
+		valueLabel.style.width = "40px";
+		valueLabel.style.textAlign = "right";
+
+		control.oninput = ( e ) =>
+		{
+			const val = parseFloat( e.target.value );
+			valueLabel.textContent = ` ${val}`;
+			onChange( val );
+		};
+
+		row.appendChild( control );
+		row.appendChild( valueLabel );
+		this.container.appendChild( row );
+	}
+
+	addButton( labelText, onClick )
+	{
+		const button = document.createElement( "button" );
+		button.type = "button";
+		button.textContent = labelText;
+		button.style.width = "100%";
+		button.style.marginTop = "8px";
+		button.onclick = onClick;
+		this.container.appendChild( button );
+	}
+}
 const pointerNdc = new THREE.Vector2();
 const dragPlane = new THREE.Plane();
 const dragPlaneNormal = new THREE.Vector3();
@@ -1223,6 +1355,23 @@ function handlePointerUp()
 	stopPointerDrag();
 }
 
+function handleWheel( event )
+{
+	if ( pointerDrag == null )
+	{
+		return;
+	}
+
+	event.preventDefault();
+
+	const cameraDistance = camera.position.distanceTo( dragPlane.coplanarPoint( new THREE.Vector3() ) ) || 10;
+	const speed = cameraDistance * 0.05;
+	const delta = -event.deltaY * 0.001 * speed;
+	
+	dragPlane.constant -= delta;
+	updatePointerDrag( event );
+}
+
 function resize()
 {
 	const width = canvas.clientWidth;
@@ -1270,6 +1419,17 @@ function resetActiveSample( options = {} )
 	stopPointerDrag();
 	physicsScene.resetWorld();
 	allowSampleCameraReset = options.preserveCamera !== true;
+	if ( activeSample?.dispose instanceof Function )
+	{
+		try
+		{
+			activeSample.dispose();
+		}
+		catch ( e )
+		{
+			console.error( e );
+		}
+	}
 	activeSample = activeSampleFactory.create( buildSampleContext() );
 	sampleElapsedSeconds = 0;
 	activeSample.reset();
@@ -1277,6 +1437,14 @@ function resetActiveSample( options = {} )
 	physicsScene.syncTransforms();
 	renderStatus();
 	sampleDescription.textContent = activeSampleFactory.description;
+
+	// Clear and optionally build custom sample controls
+	customUiContainer.replaceChildren();
+	if ( activeSample.buildUI != null )
+	{
+		activeSample.buildUI( new SimplePanel( customUiContainer ) );
+	}
+
 	persistSelectedSample( activeSampleFactory.key );
 	updateUrlForSample( activeSampleFactory.key );
 }
@@ -1337,6 +1505,7 @@ function mountSamples()
 	sampleSelect.replaceChildren();
 
 	allSamples = [
+		...createBenchmarkSamples( box3d ),
 		...createBodySamples( box3d ),
 		...createCompoundSamples( box3d ),
 		...createContinuousSamples( box3d ),
@@ -1346,6 +1515,9 @@ function mountSamples()
 		...createWorldSamples( box3d ),
 		...createStackingSamples( box3d ),
 		...createShapeSamples( box3d ),
+		...createRagdollSamples( box3d ),
+		...createCharacterSamples( box3d ),
+		...createGeometrySamples( box3d ),
 	];
 
 	for ( const sample of allSamples )
@@ -1395,6 +1567,7 @@ async function main()
 	canvas.addEventListener( "pointerup", handlePointerUp );
 	canvas.addEventListener( "pointercancel", handlePointerUp );
 	canvas.addEventListener( "pointerleave", handlePointerUp );
+	canvas.addEventListener( "wheel", handleWheel, { passive: false } );
 	mountSamples();
 	resetActiveSample();
 	cycleAccumulatorSeconds = 0;

@@ -155,6 +155,10 @@ list(APPEND export_names
 	"_box3d_js_enable_wheel_joint_steering_limit"
 	"_box3d_js_set_wheel_joint_steering_limits"
 	"_box3d_js_get_wheel_joint_steering_angle"
+	"_box3d_js_explode_world"
+	"_box3d_js_add_cylinder_shape"
+	"_box3d_js_add_hull_shape"
+	"_box3d_js_is_body_awake"
 )
 
 list(REMOVE_DUPLICATES export_names)

@@ -202,6 +202,15 @@ function createVanillaApi( module )
 			module._box3d_js_step_world( worldHandle, timeStep, subStepCount );
 		},
 
+		explodeWorld( worldHandle, options = {} )
+		{
+			const position = options.position ?? { x: 0, y: 0, z: 0 };
+			const radius = options.radius ?? 0;
+			const falloff = options.falloff ?? 0;
+			const impulsePerArea = options.impulsePerArea ?? 0;
+			module._box3d_js_explode_world( worldHandle, position.x, position.y, position.z, radius, falloff, impulsePerArea );
+		},
+
 		setWorldContactTuning( worldHandle, hertz, dampingRatio, contactSpeed )
 		{
 			module._box3d_js_set_world_contact_tuning( worldHandle, hertz, dampingRatio, contactSpeed );
@@ -1198,6 +1207,123 @@ function createVanillaApi( module )
 			);
 		},
 
+		addCylinderShape( bodyHandle, options = {} )
+		{
+			const cylinder = options.cylinder ?? { height: 1, radius: 0.5, yOffset: 0, sides: 12 };
+			const scale = options.scale ?? null;
+			const density = options.density ?? 0;
+			const friction = options.friction ?? 0.3;
+			const restitution = options.restitution ?? 0;
+			const rollingResistance = options.rollingResistance ?? 0;
+			const shapeOptions = getShapeOptions( options );
+			const filterValues = getFilterValues( shapeOptions.filter );
+
+			withOptionalArray(
+				module,
+				scale == null ? null : [ scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 ],
+				"float",
+				( scalePtr ) =>
+					withOptionalArray( module, filterValues, "i32", ( filterPtr ) =>
+						withOptionalArray(
+							module,
+							shapeOptions.tangentVelocity == null
+								? null
+								: [
+									shapeOptions.tangentVelocity.x ?? 0,
+									shapeOptions.tangentVelocity.y ?? 0,
+									shapeOptions.tangentVelocity.z ?? 0,
+								],
+							"float",
+							( tangentVelocityPtr ) =>
+								module._box3d_js_add_cylinder_shape(
+									bodyHandle,
+									cylinder.height ?? 1,
+									cylinder.radius ?? 0.5,
+									cylinder.yOffset ?? 0,
+									cylinder.sides ?? 12,
+									scalePtr,
+									density,
+									friction,
+									restitution,
+									rollingResistance,
+									shapeOptions.userMaterialId,
+									filterPtr,
+									tangentVelocityPtr,
+									shapeOptions.isSensor ? 1 : 0,
+									shapeOptions.enableSensorEvents ? 1 : 0,
+									shapeOptions.enableContactEvents ? 1 : 0,
+									shapeOptions.enableHitEvents ? 1 : 0,
+									shapeOptions.invokeContactCreation ? 1 : 0
+								)
+						)
+					)
+			);
+		},
+
+		addHullShape( bodyHandle, options = {} )
+		{
+			const points = options.points ?? [];
+			const scale = options.scale ?? null;
+			const density = options.density ?? 0;
+			const friction = options.friction ?? 0.3;
+			const restitution = options.restitution ?? 0;
+			const rollingResistance = options.rollingResistance ?? 0;
+			const shapeOptions = getShapeOptions( options );
+			const filterValues = getFilterValues( shapeOptions.filter );
+
+			const flatPoints = [];
+			for ( const p of points )
+			{
+				flatPoints.push( p.x ?? 0, p.y ?? 0, p.z ?? 0 );
+			}
+
+			withOptionalArray(
+				module,
+				flatPoints,
+				"float",
+				( pointsPtr ) =>
+					withOptionalArray(
+						module,
+						scale == null ? null : [ scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 ],
+						"float",
+						( scalePtr ) =>
+							withOptionalArray( module, filterValues, "i32", ( filterPtr ) =>
+								withOptionalArray(
+									module,
+									shapeOptions.tangentVelocity == null
+										? null
+										: [
+											shapeOptions.tangentVelocity.x ?? 0,
+											shapeOptions.tangentVelocity.y ?? 0,
+											shapeOptions.tangentVelocity.z ?? 0,
+										],
+									"float",
+									( tangentVelocityPtr ) =>
+										module._box3d_js_add_hull_shape(
+											bodyHandle,
+											pointsPtr,
+											points.length,
+											options.maxVertexCount ?? points.length,
+											scalePtr,
+											density,
+											friction,
+											restitution,
+											rollingResistance,
+											shapeOptions.userMaterialId,
+											filterPtr,
+											tangentVelocityPtr,
+											shapeOptions.isSensor ? 1 : 0,
+											shapeOptions.enableSensorEvents ? 1 : 0,
+											shapeOptions.enableContactEvents ? 1 : 0,
+											shapeOptions.enableHitEvents ? 1 : 0,
+											shapeOptions.invokeContactCreation ? 1 : 0
+										)
+								)
+							)
+					)
+			);
+		},
+
 		createDistanceJoint( worldHandle, options = {} )
 		{
 			const anchorA = options.anchorA ?? { x: 0, y: 0, z: 0 };
@@ -1999,6 +2125,11 @@ function createVanillaApi( module )
 		setBodyAwake( bodyHandle, awake = true )
 		{
 			module._box3d_js_set_body_awake( bodyHandle, awake ? 1 : 0 );
+		},
+
+		isBodyAwake( bodyHandle )
+		{
+			return Boolean( module._box3d_js_is_body_awake( bodyHandle ) );
 		},
 
 		setBodyTargetTransform( bodyHandle, transform, timeStep, wake = true )

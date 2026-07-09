@@ -2267,3 +2267,98 @@ EMSCRIPTEN_KEEPALIVE float box3d_js_get_wheel_joint_steering_angle( int jointHan
 
 	return b3WheelJoint_GetSteeringAngle( jointId );
 }
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_explode_world( int worldHandle, float posX, float posY, float posZ, float radius, float falloff, float impulsePerArea )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return;
+	}
+
+	b3ExplosionDef def = b3DefaultExplosionDef();
+	def.position.x = posX;
+	def.position.y = posY;
+	def.position.z = posZ;
+	def.radius = radius;
+	def.falloff = falloff;
+	def.impulsePerArea = impulsePerArea;
+
+	b3World_Explode( worldId, &def );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_add_cylinder_shape( int bodyHandle, float height, float radius, float yOffset, int sides, const float* scale3,
+                                                       float density, float friction, float restitution, float rollingResistance, int userMaterialId,
+                                                       const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+                                                       int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	b3HullData* hull = b3CreateCylinder( height, radius, yOffset, sides );
+	if ( hull == NULL )
+	{
+		return;
+	}
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+
+	if ( scale3 != NULL )
+	{
+		b3CreateTransformedHullShape( bodyId, &shapeDef, hull, b3Transform_identity, (b3Vec3){ scale3[0], scale3[1], scale3[2] } );
+	}
+	else
+	{
+		b3CreateHullShape( bodyId, &shapeDef, hull );
+	}
+
+	b3DestroyHull( hull );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_add_hull_shape( int bodyHandle, const float* points3, int pointCount, int maxVertexCount, const float* scale3,
+                                                   float density, float friction, float restitution, float rollingResistance, int userMaterialId,
+                                                   const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+                                                   int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || points3 == NULL || pointCount <= 0 )
+	{
+		return;
+	}
+
+	const b3Vec3* points = (const b3Vec3*)points3;
+	b3HullData* hull = b3CreateHull( points, pointCount, maxVertexCount > 0 ? maxVertexCount : pointCount );
+	if ( hull == NULL )
+	{
+		return;
+	}
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+
+	if ( scale3 != NULL )
+	{
+		b3CreateTransformedHullShape( bodyId, &shapeDef, hull, b3Transform_identity, (b3Vec3){ scale3[0], scale3[1], scale3[2] } );
+	}
+	else
+	{
+		b3CreateHullShape( bodyId, &shapeDef, hull );
+	}
+
+	b3DestroyHull( hull );
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_is_body_awake( int bodyHandle )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return 0;
+	}
+
+	return b3Body_IsAwake( bodyId ) ? 1 : 0;
+}
