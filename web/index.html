@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Box3D Web Samples</title>
+	<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+	<div class="app-shell">
+		<canvas id="viewport"></canvas>
+		<aside class="panel">
+			<div class="eyebrow">Box3D WebAssembly</div>
+			<h1>Vanilla + Three.js Sample Host</h1>
+			<p class="lede">
+				A lightweight browser harness for porting native Box3D examples sample-by-sample, with click-and-drag body inspection in the viewport.
+			</p>
+			<label class="field">
+				<span>Sample</span>
+				<select id="sample-select"></select>
+			</label>
+			<div class="button-row">
+				<button id="restart-button" type="button">Restart</button>
+				<button id="pause-button" type="button">Pause</button>
+				<button id="step-button" type="button">Step</button>
+			</div>
+			<section>
+				<h2>Status</h2>
+				<div id="status-lines" class="status-lines"></div>
+			</section>
+			<section>
+				<h2>Notes</h2>
+				<div id="sample-description" class="notes"></div>
+			</section>
+		</aside>
+	</div>
+	<script type="module" src="./app.js"></script>
+</body>
+</html>

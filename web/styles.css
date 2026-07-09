@@ -1,0 +1,177 @@
+:root {
+	color-scheme: light;
+	--bg: #e9e1d4;
+	--panel: rgba(36, 32, 28, 0.92);
+	--panel-edge: rgba(255, 244, 227, 0.16);
+	--text: #f8f2e9;
+	--muted: #d1c3ae;
+	--accent: #d66f3d;
+	--accent-strong: #ffb06f;
+	--button: rgba(255, 244, 227, 0.08);
+	--button-hover: rgba(255, 244, 227, 0.16);
+	--select-bg: rgba(20, 18, 15, 0.88);
+	--select-bg-hover: rgba(34, 30, 26, 0.96);
+	--surface: #f7efe1;
+	--shadow: rgba(24, 20, 16, 0.24);
+	font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	background:
+		radial-gradient(circle at top, rgba(255, 255, 255, 0.5), transparent 42%),
+		linear-gradient(135deg, #f4ecdf, #ddc8a9 58%, #c9a57c);
+	color: var(--text);
+}
+
+.app-shell {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 360px;
+	min-height: 100vh;
+}
+
+#viewport {
+	display: block;
+	width: 100%;
+	height: 100vh;
+	cursor: grab;
+	background:
+		radial-gradient(circle at top, rgba(174, 212, 236, 0.65), transparent 35%),
+		linear-gradient(180deg, #bfcfd8 0%, #efe2cf 68%, #d6bb95 100%);
+}
+
+#viewport.is-dragging {
+	cursor: grabbing;
+}
+
+.panel {
+	padding: 28px 24px;
+	background: var(--panel);
+	backdrop-filter: blur(12px);
+	border-left: 1px solid var(--panel-edge);
+	box-shadow: -12px 0 32px var(--shadow);
+}
+
+.eyebrow {
+	margin-bottom: 12px;
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+}
+
+h1,
+h2,
+p {
+	margin: 0;
+}
+
+h1 {
+	font-size: 28px;
+	line-height: 1.1;
+}
+
+h2 {
+	margin-bottom: 8px;
+	font-size: 14px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+}
+
+section + section,
+.field,
+.button-row,
+.lede {
+	margin-top: 18px;
+}
+
+.lede,
+.notes,
+.status-lines {
+	color: var(--muted);
+	line-height: 1.5;
+}
+
+.field {
+	display: grid;
+	gap: 8px;
+}
+
+.field span {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--accent-strong);
+}
+
+select,
+button {
+	border: 1px solid var(--panel-edge);
+	border-radius: 12px;
+	color: var(--text);
+	background: var(--button);
+	font: inherit;
+}
+
+select {
+	padding: 12px 14px;
+	background: var(--select-bg);
+	color: var(--text);
+}
+
+select:hover,
+select:focus {
+	background: var(--select-bg-hover);
+}
+
+select option {
+	background: #1b1815;
+	color: var(--text);
+}
+
+.button-row {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 10px;
+}
+
+button {
+	padding: 11px 14px;
+	cursor: pointer;
+	transition: background-color 120ms ease, transform 120ms ease;
+}
+
+button:hover {
+	background: var(--button-hover);
+	transform: translateY(-1px);
+}
+
+.status-lines {
+	display: grid;
+	gap: 6px;
+	font-family: "Consolas", "SFMono-Regular", monospace;
+	font-size: 13px;
+}
+
+@media (max-width: 960px) {
+	.app-shell {
+		grid-template-columns: 1fr;
+		grid-template-rows: minmax(360px, 55vh) auto;
+	}
+
+	#viewport {
+		height: 55vh;
+	}
+
+	.panel {
+		border-left: 0;
+		border-top: 1px solid var(--panel-edge);
+	}
+}

@@ -1,0 +1,22 @@
+{
+  "name": "box3d-wasm-port",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --configLoader runner",
+    "dev:double": "npm run wasm:double && vite --configLoader runner",
+    "build": "vite build --configLoader runner",
+    "preview": "vite preview --configLoader runner",
+    "wasm": "node ./scripts/build-wasm.mjs --flavor single",
+    "wasm:double": "node ./scripts/build-wasm.mjs --flavor double",
+    "wasm:sync": "node ./scripts/build-wasm.mjs --flavor single --sync-only",
+    "wasm:sync:double": "node ./scripts/build-wasm.mjs --flavor double --sync-only"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "vite": "^7.0.4"
+  }
+}

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Box3D WASM Demo</title>
+	<style>
+		:root {
+			font-family: "Segoe UI", sans-serif;
+			background: #e9efe8;
+			color: #18211b;
+		}
+
+		body {
+			margin: 0;
+			min-height: 100vh;
+			display: grid;
+			place-items: center;
+			background:
+				radial-gradient(circle at top, rgba(255, 255, 255, 0.8), transparent 35%),
+				linear-gradient(180deg, #eff5ea 0%, #d7e0d2 100%);
+		}
+
+		main {
+			width: min(92vw, 840px);
+			padding: 24px;
+			border-radius: 24px;
+			background: rgba(255, 255, 255, 0.74);
+			box-shadow: 0 18px 50px rgba(38, 58, 43, 0.14);
+			backdrop-filter: blur(10px);
+		}
+
+		canvas {
+			width: 100%;
+			height: auto;
+			display: block;
+			border-radius: 18px;
+			background: linear-gradient(180deg, #fefefc 0%, #eef2e7 100%);
+		}
+
+		pre {
+			margin: 16px 0 0;
+			padding: 12px;
+			border-radius: 12px;
+			background: #17211b;
+			color: #f5f6f2;
+			overflow: auto;
+		}
+	</style>
+</head>
+<body>
+	<main>
+		<h1>Box3D WASM Demo</h1>
+		<p>This page uses the vanilla JavaScript wrapper on top of the raw exported Box3D API. The view is a simple front projection of a falling cube.</p>
+		<canvas id="scene" width="840" height="420"></canvas>
+		<pre id="stats">loading...</pre>
+	</main>
+	<script type="module">
+		import loadBox3D from "./box3d.js";
+
+		const canvas = document.getElementById( "scene" );
+		const ctx = canvas.getContext( "2d" );
+		const stats = document.getElementById( "stats" );
+		const pixelsPerMeter = 28;
+
+		const box3d = await loadBox3D();
+		const world = box3d.api.createWorld( { gravity: { x: 0, y: -10, z: 0 } } );
+
+		box3d.api.createBox( world, {
+			type: box3d.BodyType.static,
+			position: { x: 0, y: -10, z: 0 },
+			size: { hx: 50, hy: 10, hz: 50 },
+			density: 0,
+		} );
+
+		const body = box3d.api.createBox( world, {
+			type: box3d.BodyType.dynamic,
+			position: { x: 0, y: 4, z: 0 },
+			size: { hx: 1, hy: 1, hz: 1 },
+			density: 1,
+			friction: 0.3,
+		} );
+
+		function project( x, y, z )
+		{
+			return {
+				x: canvas.width * 0.5 + ( x + z * 0.35 ) * pixelsPerMeter,
+				y: canvas.height - ( y * pixelsPerMeter + 80 + z * 0.18 * pixelsPerMeter ),
+			};
+		}
+
+		function drawBox( transform, size, fillStyle )
+		{
+			const center = project( transform.position.x, transform.position.y, transform.position.z );
+			ctx.save();
+			ctx.translate( center.x, center.y );
+			ctx.fillStyle = fillStyle;
+			ctx.fillRect( -size.hx * pixelsPerMeter, -size.hy * pixelsPerMeter, size.hx * 2 * pixelsPerMeter, size.hy * 2 * pixelsPerMeter );
+			ctx.restore();
+		}
+
+		function frame()
+		{
+			box3d.api.stepWorld( world, 1 / 60, 4 );
+
+			ctx.clearRect( 0, 0, canvas.width, canvas.height );
+			drawBox( { position: { x: 0, y: -10, z: 0 } }, { hx: 12, hy: 0.5, hz: 12 }, "#b8c7af" );
+
+			const transform = box3d.api.getBodyTransform( body );
+			drawBox( transform, { hx: 1, hy: 1, hz: 1 }, "#bf5a3c" );
+
+			stats.textContent = JSON.stringify( transform, null, 2 );
+			requestAnimationFrame( frame );
+		}
+
+		frame();
+	</script>
+</body>
+</html>
