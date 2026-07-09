@@ -1779,7 +1779,9 @@ In this example, I'm creating a shape proxy from a sphere and then calling `b3Wo
 This takes a `b3OverlapResultFcn()` to receive results and control the search progress.
 
 ```c
+{% raw %}
 b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.2f};
+{% endraw %}
 b3ShapeProxy proxy;
 proxy.points = &sphere.center;
 proxy.count  = 1;
@@ -1882,7 +1884,9 @@ float MyCastCallback(b3ShapeId shapeId, b3Vec3 point, b3Vec3 normal,
 
 // Elsewhere ...
 MyRayCastContext context = {0};
+{% raw %}
 b3Sphere sphere = {{-1.0f, 0.0f, 0.0f}, 0.05f};
+{% endraw %}
 b3ShapeProxy proxy;
 proxy.points = &sphere.center;
 proxy.count  = 1;
