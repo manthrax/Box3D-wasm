@@ -1,7 +1,9 @@
 #include "box3d/box3d.h"
 
+#include <float.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
@@ -49,10 +51,79 @@ typedef struct Box3DJsMeshSlot
 	b3MeshData* meshData;
 } Box3DJsMeshSlot;
 
+typedef struct Box3DJsCastClosestContext
+{
+	bool ignoreInitialOverlap;
+	bool hit;
+	b3Pos point;
+	b3Vec3 normal;
+	float fraction;
+	int triangleIndex;
+	int childIndex;
+	uint64_t userMaterialId;
+} Box3DJsCastClosestContext;
+
+typedef struct Box3DJsPlaneGatherContext
+{
+	double* outValues;
+	int capacity;
+	int count;
+} Box3DJsPlaneGatherContext;
+
 static Box3DJsWorldSlot g_world_slots[BOX3D_JS_MAX_WORLDS];
 static Box3DJsBodySlot g_body_slots[BOX3D_JS_MAX_BODIES];
 static Box3DJsJointSlot g_joint_slots[BOX3D_JS_MAX_JOINTS];
 static Box3DJsMeshSlot g_mesh_slots[BOX3D_JS_MAX_MESHES];
+
+static float Box3DJsCastClosestCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t materialId, int triangleIndex,
+										 int childIndex, void* context )
+{
+	(void)shapeId;
+	Box3DJsCastClosestContext* castContext = (Box3DJsCastClosestContext*)context;
+	if ( castContext == NULL )
+	{
+		return 0.0f;
+	}
+
+	if ( castContext->ignoreInitialOverlap && fraction == 0.0f )
+	{
+		return -1.0f;
+	}
+
+	castContext->hit = true;
+	castContext->point = point;
+	castContext->normal = normal;
+	castContext->fraction = fraction;
+	castContext->triangleIndex = triangleIndex;
+	castContext->childIndex = childIndex;
+	castContext->userMaterialId = materialId;
+	return fraction;
+}
+
+static bool Box3DJsGatherPlaneCallback( b3ShapeId shapeId, const b3PlaneResult* results, int planeCount, void* context )
+{
+	(void)shapeId;
+	Box3DJsPlaneGatherContext* gatherContext = (Box3DJsPlaneGatherContext*)context;
+	if ( gatherContext == NULL || gatherContext->outValues == NULL || results == NULL || planeCount <= 0 )
+	{
+		return true;
+	}
+
+	for ( int i = 0; i < planeCount && gatherContext->count < gatherContext->capacity; ++i )
+	{
+		const int base = 7 * gatherContext->count;
+		gatherContext->outValues[base + 0] = results[i].plane.normal.x;
+		gatherContext->outValues[base + 1] = results[i].plane.normal.y;
+		gatherContext->outValues[base + 2] = results[i].plane.normal.z;
+		gatherContext->outValues[base + 3] = results[i].plane.offset;
+		gatherContext->outValues[base + 4] = results[i].point.x;
+		gatherContext->outValues[base + 5] = results[i].point.y;
+		gatherContext->outValues[base + 6] = results[i].point.z;
+		gatherContext->count += 1;
+	}
+
+	return gatherContext->count < gatherContext->capacity;
+}
 
 static void ResetHelloState( void )
 {
@@ -388,11 +459,11 @@ EMSCRIPTEN_KEEPALIVE float box3d_hello_run_demo( int stepCount )
 	return (float)transform[1];
 }
 
-EMSCRIPTEN_KEEPALIVE int box3d_js_create_world( float gravityX, float gravityY, float gravityZ )
+EMSCRIPTEN_KEEPALIVE int box3d_js_create_world( float gravityX, float gravityY, float gravityZ, int workerCount )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = (b3Vec3){ gravityX, gravityY, gravityZ };
-	worldDef.workerCount = 1;
+	worldDef.workerCount = workerCount > 0 ? workerCount : 1;
 
 	b3WorldId worldId = b3CreateWorld( &worldDef );
 	if ( b3World_IsValid( worldId ) == false )
@@ -401,6 +472,28 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_world( float gravityX, float gravityY, 
 	}
 
 	return AllocWorldSlot( worldId );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_worker_count( int worldHandle, int workerCount )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return;
+	}
+
+	b3World_SetWorkerCount( worldId, workerCount > 0 ? workerCount : 1 );
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_world_worker_count( int worldHandle )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return 0;
+	}
+
+	return b3World_GetWorkerCount( worldId );
 }
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_body( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
@@ -463,6 +556,73 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_get_world_awake_body_count( int worldHandle )
 	return b3World_GetAwakeBodyCount( worldId );
 }
 
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_body_first_shape_mesh_material_count( int bodyHandle )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return 0;
+	}
+
+	int shapeCount = b3Body_GetShapeCount( bodyId );
+	if ( shapeCount <= 0 )
+	{
+		return 0;
+	}
+
+	b3ShapeId shapeId = b3_nullShapeId;
+	int copied = b3Body_GetShapes( bodyId, &shapeId, 1 );
+	if ( copied <= 0 || b3Shape_IsValid( shapeId ) == false )
+	{
+		return 0;
+	}
+
+	return b3Shape_GetMeshMaterialCount( shapeId );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_get_body_first_shape_mesh_material( int bodyHandle, int materialIndex, double* outValues8 )
+{
+	if ( outValues8 == NULL )
+	{
+		return;
+	}
+
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	int shapeCount = b3Body_GetShapeCount( bodyId );
+	if ( shapeCount <= 0 )
+	{
+		return;
+	}
+
+	b3ShapeId shapeId = b3_nullShapeId;
+	int copied = b3Body_GetShapes( bodyId, &shapeId, 1 );
+	if ( copied <= 0 || b3Shape_IsValid( shapeId ) == false )
+	{
+		return;
+	}
+
+	int materialCount = b3Shape_GetMeshMaterialCount( shapeId );
+	if ( materialIndex < 0 || materialIndex >= materialCount )
+	{
+		return;
+	}
+
+	b3SurfaceMaterial material = b3Shape_GetMeshSurfaceMaterial( shapeId, materialIndex );
+	outValues8[0] = material.friction;
+	outValues8[1] = material.restitution;
+	outValues8[2] = material.rollingResistance;
+	outValues8[3] = material.tangentVelocity.x;
+	outValues8[4] = material.tangentVelocity.y;
+	outValues8[5] = material.tangentVelocity.z;
+	outValues8[6] = (double)material.userMaterialId;
+	outValues8[7] = (double)material.customColor;
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_get_world_counters( int worldHandle, int* out37 )
 {
 	if ( out37 == NULL )
@@ -498,6 +658,564 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_get_world_counters( int worldHandle, int* out
 	{
 		out37[13 + i] = counters.colorCounts[i];
 	}
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_ray_closest( int worldHandle, const float* origin3, const float* translation3, const int* filter2, double* outValues10 )
+{
+	if ( outValues10 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 10; ++i )
+	{
+		outValues10[i] = 0.0;
+	}
+
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false || origin3 == NULL || translation3 == NULL )
+	{
+		return;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3RayResult result = b3World_CastRayClosest( worldId, (b3Pos){ origin3[0], origin3[1], origin3[2] },
+												 (b3Vec3){ translation3[0], translation3[1], translation3[2] }, filter );
+	if ( result.hit == false )
+	{
+		return;
+	}
+
+	outValues10[0] = 1.0;
+	outValues10[1] = result.point.x;
+	outValues10[2] = result.point.y;
+	outValues10[3] = result.point.z;
+	outValues10[4] = result.normal.x;
+	outValues10[5] = result.normal.y;
+	outValues10[6] = result.normal.z;
+	outValues10[7] = result.fraction;
+	outValues10[8] = (double)result.triangleIndex;
+	outValues10[9] = (double)result.childIndex;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, const float* points3, int pointCount, float radius, const float* translation3,
+															 float maxFraction, const int* filter2, int ignoreInitialOverlap,
+															 double* outValues10 )
+{
+	if ( outValues10 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 10; ++i )
+	{
+		outValues10[i] = 0.0;
+	}
+
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false || points3 == NULL || pointCount <= 0 || translation3 == NULL )
+	{
+		return;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3ShapeProxy proxy = {
+		.points = (const b3Vec3*)points3,
+		.count = pointCount,
+		.radius = radius,
+	};
+
+	Box3DJsCastClosestContext context = {
+		.ignoreInitialOverlap = ignoreInitialOverlap != 0,
+	};
+
+	float clampedFraction = maxFraction;
+	if ( clampedFraction < 0.0f )
+	{
+		clampedFraction = 0.0f;
+	}
+	else if ( clampedFraction > 1.0f )
+	{
+		clampedFraction = 1.0f;
+	}
+
+	b3Vec3 translation = {
+		clampedFraction * translation3[0],
+		clampedFraction * translation3[1],
+		clampedFraction * translation3[2],
+	};
+
+	b3World_CastShape( worldId, b3Pos_zero, &proxy, translation, filter, Box3DJsCastClosestCallback, &context );
+	if ( context.hit == false )
+	{
+		return;
+	}
+
+	outValues10[0] = 1.0;
+	outValues10[1] = context.point.x;
+	outValues10[2] = context.point.y;
+	outValues10[3] = context.point.z;
+	outValues10[4] = context.normal.x;
+	outValues10[5] = context.normal.y;
+	outValues10[6] = context.normal.z;
+	outValues10[7] = context.fraction;
+	outValues10[8] = (double)context.triangleIndex;
+	outValues10[9] = (double)context.childIndex;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_shape_distance( const float* pointsA3, int pointCountA, float radiusA, const double* transformA7,
+												   const float* pointsB3, int pointCountB, float radiusB, const double* transformB7,
+												   int useRadii, double* outValues12 )
+{
+	if ( outValues12 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 12; ++i )
+	{
+		outValues12[i] = 0.0;
+	}
+
+	if ( pointsA3 == NULL || pointCountA <= 0 || transformA7 == NULL || pointsB3 == NULL || pointCountB <= 0 || transformB7 == NULL )
+	{
+		return;
+	}
+
+	b3ShapeProxy proxyA = {
+		.points = (const b3Vec3*)pointsA3,
+		.count = pointCountA,
+		.radius = radiusA,
+	};
+
+	b3ShapeProxy proxyB = {
+		.points = (const b3Vec3*)pointsB3,
+		.count = pointCountB,
+		.radius = radiusB,
+	};
+
+	b3WorldTransform transformA = {
+		(b3Pos){ transformA7[0], transformA7[1], transformA7[2] },
+		(b3Quat){ { (float)transformA7[3], (float)transformA7[4], (float)transformA7[5] }, (float)transformA7[6] },
+	};
+
+	b3WorldTransform transformB = {
+		(b3Pos){ transformB7[0], transformB7[1], transformB7[2] },
+		(b3Quat){ { (float)transformB7[3], (float)transformB7[4], (float)transformB7[5] }, (float)transformB7[6] },
+	};
+
+	b3DistanceInput input = {
+		.proxyA = proxyA,
+		.proxyB = proxyB,
+		.transform = b3InvMulWorldTransforms( transformA, transformB ),
+		.useRadii = useRadii != 0,
+	};
+
+	b3SimplexCache cache = b3_emptyDistanceCache;
+	b3DistanceOutput output = b3ShapeDistance( &input, &cache, NULL, 0 );
+
+	b3Pos pointA = b3TransformWorldPoint( transformA, output.pointA );
+	b3Pos pointB = b3TransformWorldPoint( transformA, output.pointB );
+	b3Vec3 normal = b3RotateVector( transformA.q, output.normal );
+
+	outValues12[0] = pointA.x;
+	outValues12[1] = pointA.y;
+	outValues12[2] = pointA.z;
+	outValues12[3] = pointB.x;
+	outValues12[4] = pointB.y;
+	outValues12[5] = pointB.z;
+	outValues12[6] = normal.x;
+	outValues12[7] = normal.y;
+	outValues12[8] = normal.z;
+	outValues12[9] = output.distance;
+	outValues12[10] = (double)output.iterations;
+	outValues12[11] = (double)output.simplexCount;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_time_of_impact( const float* pointsA3, int pointCountA, float radiusA, const double* sweepA14,
+												   const float* pointsB3, int pointCountB, float radiusB, const double* sweepB14,
+												   float maxFraction, double* outValues12 )
+{
+	if ( outValues12 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 12; ++i )
+	{
+		outValues12[i] = 0.0;
+	}
+
+	if ( pointsA3 == NULL || pointCountA <= 0 || sweepA14 == NULL || pointsB3 == NULL || pointCountB <= 0 || sweepB14 == NULL )
+	{
+		return;
+	}
+
+	b3ShapeProxy proxyA = {
+		.points = (const b3Vec3*)pointsA3,
+		.count = pointCountA,
+		.radius = radiusA,
+	};
+
+	b3ShapeProxy proxyB = {
+		.points = (const b3Vec3*)pointsB3,
+		.count = pointCountB,
+		.radius = radiusB,
+	};
+
+	b3Sweep sweepA = {
+		.localCenter = { (float)sweepA14[0], (float)sweepA14[1], (float)sweepA14[2] },
+		.c1 = { sweepA14[3], sweepA14[4], sweepA14[5] },
+		.c2 = { sweepA14[6], sweepA14[7], sweepA14[8] },
+		.q1 = { { (float)sweepA14[9], (float)sweepA14[10], (float)sweepA14[11] }, (float)sweepA14[12] },
+		.q2 = { { (float)sweepA14[13], (float)sweepA14[14], (float)sweepA14[15] }, (float)sweepA14[16] },
+	};
+
+	b3Sweep sweepB = {
+		.localCenter = { (float)sweepB14[0], (float)sweepB14[1], (float)sweepB14[2] },
+		.c1 = { sweepB14[3], sweepB14[4], sweepB14[5] },
+		.c2 = { sweepB14[6], sweepB14[7], sweepB14[8] },
+		.q1 = { { (float)sweepB14[9], (float)sweepB14[10], (float)sweepB14[11] }, (float)sweepB14[12] },
+		.q2 = { { (float)sweepB14[13], (float)sweepB14[14], (float)sweepB14[15] }, (float)sweepB14[16] },
+	};
+
+	b3TOIInput input = {
+		.proxyA = proxyA,
+		.proxyB = proxyB,
+		.sweepA = sweepA,
+		.sweepB = sweepB,
+		.maxFraction = maxFraction,
+	};
+
+	b3TOIOutput output = b3TimeOfImpact( &input );
+
+	outValues12[0] = (double)output.state;
+	outValues12[1] = output.point.x;
+	outValues12[2] = output.point.y;
+	outValues12[3] = output.point.z;
+	outValues12[4] = output.normal.x;
+	outValues12[5] = output.normal.y;
+	outValues12[6] = output.normal.z;
+	outValues12[7] = output.fraction;
+	outValues12[8] = output.distance;
+	outValues12[9] = (double)output.distanceIterations;
+	outValues12[10] = (double)output.pushBackIterations;
+	outValues12[11] = (double)output.rootIterations;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_body_cast_ray( int bodyHandle, const float* origin3, const float* translation3, const int* filter2, float maxFraction,
+												  double* outValues9 )
+{
+	if ( outValues9 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 9; ++i )
+	{
+		outValues9[i] = 0.0;
+	}
+
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || origin3 == NULL || translation3 == NULL )
+	{
+		return;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3BodyCastResult result = b3Body_CastRay( bodyId, (b3Pos){ origin3[0], origin3[1], origin3[2] }, (b3Vec3){ translation3[0], translation3[1], translation3[2] },
+											  filter, maxFraction, b3WorldTransform_identity );
+	if ( result.hit == false )
+	{
+		return;
+	}
+
+	outValues9[0] = 1.0;
+	outValues9[1] = result.point.x;
+	outValues9[2] = result.point.y;
+	outValues9[3] = result.point.z;
+	outValues9[4] = result.fraction;
+	outValues9[5] = (double)result.triangleIndex;
+	outValues9[6] = result.normal.x;
+	outValues9[7] = result.normal.y;
+	outValues9[8] = result.normal.z;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_body_cast_shape( int bodyHandle, const double* bodyTransform7, const float* origin3, const float* points3, int pointCount,
+													float radius, const float* translation3, const int* filter2, float maxFraction, int canEncroach,
+													double* outValues9 )
+{
+	if ( outValues9 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 9; ++i )
+	{
+		outValues9[i] = 0.0;
+	}
+
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || bodyTransform7 == NULL || origin3 == NULL || points3 == NULL || pointCount <= 0 || translation3 == NULL )
+	{
+		return;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3ShapeProxy proxy = {
+		.points = (const b3Vec3*)points3,
+		.count = pointCount,
+		.radius = radius,
+	};
+
+	b3WorldTransform bodyTransform = {
+		(b3Pos){ bodyTransform7[0], bodyTransform7[1], bodyTransform7[2] },
+		(b3Quat){ { (float)bodyTransform7[3], (float)bodyTransform7[4], (float)bodyTransform7[5] }, (float)bodyTransform7[6] },
+	};
+
+	b3BodyCastResult result = b3Body_CastShape(
+		bodyId,
+		(b3Pos){ origin3[0], origin3[1], origin3[2] },
+		&proxy,
+		(b3Vec3){ translation3[0], translation3[1], translation3[2] },
+		filter,
+		maxFraction,
+		canEncroach != 0,
+		bodyTransform
+	);
+	if ( result.hit == false )
+	{
+		return;
+	}
+
+	outValues9[0] = 1.0;
+	outValues9[1] = result.point.x;
+	outValues9[2] = result.point.y;
+	outValues9[3] = result.point.z;
+	outValues9[4] = result.fraction;
+	outValues9[5] = (double)result.triangleIndex;
+	outValues9[6] = result.normal.x;
+	outValues9[7] = result.normal.y;
+	outValues9[8] = result.normal.z;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_body_overlap_shape( int bodyHandle, const double* bodyTransform7, const float* origin3, const float* points3, int pointCount,
+													  float radius, const int* filter2 )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || bodyTransform7 == NULL || origin3 == NULL || points3 == NULL || pointCount <= 0 )
+	{
+		return 0;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3ShapeProxy proxy = {
+		.points = (const b3Vec3*)points3,
+		.count = pointCount,
+		.radius = radius,
+	};
+
+	b3WorldTransform bodyTransform = {
+		(b3Pos){ bodyTransform7[0], bodyTransform7[1], bodyTransform7[2] },
+		(b3Quat){ { (float)bodyTransform7[3], (float)bodyTransform7[4], (float)bodyTransform7[5] }, (float)bodyTransform7[6] },
+	};
+
+	return b3Body_OverlapShape(
+		bodyId,
+		(b3Pos){ origin3[0], origin3[1], origin3[2] },
+		&proxy,
+		filter,
+		bodyTransform
+	) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_body_collide_mover( int bodyHandle, const double* bodyTransform7, const float* origin3, const float* capsule7, const int* filter2,
+													  int maxPlanes, double* outPlanes7 )
+{
+	if ( outPlanes7 == NULL || maxPlanes <= 0 )
+	{
+		return 0;
+	}
+
+	for ( int i = 0; i < 7 * maxPlanes; ++i )
+	{
+		outPlanes7[i] = 0.0;
+	}
+
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || bodyTransform7 == NULL || origin3 == NULL || capsule7 == NULL )
+	{
+		return 0;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3Capsule mover = {
+		{ capsule7[0], capsule7[1], capsule7[2] },
+		{ capsule7[3], capsule7[4], capsule7[5] },
+		capsule7[6],
+	};
+
+	b3WorldTransform bodyTransform = {
+		(b3Pos){ bodyTransform7[0], bodyTransform7[1], bodyTransform7[2] },
+		(b3Quat){ { (float)bodyTransform7[3], (float)bodyTransform7[4], (float)bodyTransform7[5] }, (float)bodyTransform7[6] },
+	};
+
+	b3BodyPlaneResult* bodyPlanes = malloc( (size_t)maxPlanes * sizeof( b3BodyPlaneResult ) );
+	if ( bodyPlanes == NULL )
+	{
+		return 0;
+	}
+
+	int count = b3Body_CollideMover(
+		bodyId,
+		bodyPlanes,
+		maxPlanes,
+		(b3Pos){ origin3[0], origin3[1], origin3[2] },
+		&mover,
+		filter,
+		bodyTransform
+	);
+
+	for ( int i = 0; i < count; ++i )
+	{
+		const int base = 7 * i;
+		outPlanes7[base + 0] = bodyPlanes[i].result.plane.normal.x;
+		outPlanes7[base + 1] = bodyPlanes[i].result.plane.normal.y;
+		outPlanes7[base + 2] = bodyPlanes[i].result.plane.normal.z;
+		outPlanes7[base + 3] = bodyPlanes[i].result.plane.offset;
+		outPlanes7[base + 4] = bodyPlanes[i].result.point.x;
+		outPlanes7[base + 5] = bodyPlanes[i].result.point.y;
+		outPlanes7[base + 6] = bodyPlanes[i].result.point.z;
+	}
+
+	free( bodyPlanes );
+	return count;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_world_collide_mover( int worldHandle, const double* origin3, const float* capsule7, const int* filter2, int maxPlanes,
+													   double* outPlanes7 )
+{
+	if ( outPlanes7 == NULL || maxPlanes <= 0 )
+	{
+		return 0;
+	}
+
+	for ( int i = 0; i < 7 * maxPlanes; ++i )
+	{
+		outPlanes7[i] = 0.0;
+	}
+
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false || origin3 == NULL || capsule7 == NULL )
+	{
+		return 0;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3Capsule mover = {
+		{ capsule7[0], capsule7[1], capsule7[2] },
+		{ capsule7[3], capsule7[4], capsule7[5] },
+		capsule7[6],
+	};
+
+	Box3DJsPlaneGatherContext context = {
+		.outValues = outPlanes7,
+		.capacity = maxPlanes,
+		.count = 0,
+	};
+
+	b3World_CollideMover( worldId, (b3Pos){ origin3[0], origin3[1], origin3[2] }, &mover, filter, Box3DJsGatherPlaneCallback, &context );
+	return context.count;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_solve_planes( const float* targetDelta3, const double* planes7, int planeCount, double* outValues4 )
+{
+	if ( outValues4 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 4; ++i )
+	{
+		outValues4[i] = 0.0;
+	}
+
+	if ( planes7 == NULL || planeCount <= 0 )
+	{
+		return;
+	}
+
+	b3CollisionPlane* planes = malloc( (size_t)planeCount * sizeof( b3CollisionPlane ) );
+	if ( planes == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < planeCount; ++i )
+	{
+		const int base = 7 * i;
+		planes[i].plane.normal = (b3Vec3){ (float)planes7[base + 0], (float)planes7[base + 1], (float)planes7[base + 2] };
+		planes[i].plane.offset = (float)planes7[base + 3];
+		planes[i].pushLimit = FLT_MAX;
+		planes[i].push = 0.0f;
+		planes[i].clipVelocity = true;
+	}
+
+	b3Vec3 targetDelta = b3Vec3_zero;
+	if ( targetDelta3 != NULL )
+	{
+		targetDelta = (b3Vec3){ targetDelta3[0], targetDelta3[1], targetDelta3[2] };
+	}
+
+	b3PlaneSolverResult result = b3SolvePlanes( targetDelta, planes, planeCount );
+	free( planes );
+
+	outValues4[0] = result.delta.x;
+	outValues4[1] = result.delta.y;
+	outValues4[2] = result.delta.z;
+	outValues4[3] = (double)result.iterationCount;
 }
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_box( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
@@ -736,7 +1454,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_platform_mesh( float centerX, float cen
 }
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_mesh( const float* vertices3, int vertexCount, const int* indices3, int triangleCount,
-											   int useMedianSplit, int identifyEdges )
+											   unsigned char* materialIndices, int useMedianSplit, int identifyEdges, int weldVertices, float weldTolerance )
 {
 	if ( vertices3 == NULL || indices3 == NULL || vertexCount <= 0 || triangleCount <= 0 )
 	{
@@ -748,11 +1466,27 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_mesh( const float* vertices3, int verte
 	def.vertices = (b3Vec3*)vertices3;
 	def.triangleCount = triangleCount;
 	def.indices = (int*)indices3;
+	def.materialIndices = materialIndices;
 	def.useMedianSplit = useMedianSplit != 0;
 	def.identifyEdges = identifyEdges != 0;
+	def.weldVertices = weldVertices != 0;
+	def.weldTolerance = weldTolerance;
 
 	b3MeshData* mesh = b3CreateMesh( &def, NULL, 0 );
 	return mesh != NULL ? AllocMeshSlot( mesh ) : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_mesh_material_indices( int meshHandle, const unsigned char* materialIndices, int materialCount )
+{
+	b3MeshData* mesh = LookupMesh( meshHandle );
+	if ( mesh == NULL || materialIndices == NULL || materialCount <= 0 || mesh->materialOffset == 0 )
+	{
+		return;
+	}
+
+	int copyCount = materialCount < mesh->triangleCount ? materialCount : mesh->triangleCount;
+	unsigned char* destination = (unsigned char*)( (intptr_t)mesh + mesh->materialOffset );
+	memcpy( destination, materialIndices, (size_t)copyCount * sizeof( unsigned char ) );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_mesh( int meshHandle )
@@ -770,7 +1504,8 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_mesh( int meshHandle )
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_mesh_shape( int bodyHandle, int meshHandle, const float* scale3, float density, float friction,
 												   float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
-												   int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												   const double* materials8, int materialCount, int isSensor, int enableSensorEvents, int enableContactEvents,
+												   int enableHitEvents, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	b3MeshData* mesh = LookupMesh( meshHandle );
@@ -781,8 +1516,36 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_mesh_shape( int bodyHandle, int meshHandl
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	b3SurfaceMaterial* materials = NULL;
+	if ( materials8 != NULL && materialCount > 0 )
+	{
+		materials = malloc( (size_t)materialCount * sizeof( b3SurfaceMaterial ) );
+		if ( materials != NULL )
+		{
+			for ( int i = 0; i < materialCount; ++i )
+			{
+				const double* values = materials8 + i * 8;
+				materials[i] = b3DefaultSurfaceMaterial();
+				materials[i].friction = (float)values[0];
+				materials[i].restitution = (float)values[1];
+				materials[i].rollingResistance = (float)values[2];
+				materials[i].tangentVelocity = (b3Vec3){ (float)values[3], (float)values[4], (float)values[5] };
+				materials[i].userMaterialId = (uint64_t)values[6];
+				materials[i].customColor = (uint32_t)values[7];
+			}
+
+			shapeDef.materials = materials;
+			shapeDef.materialCount = materialCount;
+		}
+	}
+
 	b3Vec3 scale = scale3 != NULL ? (b3Vec3){ scale3[0], scale3[1], scale3[2] } : b3Vec3_one;
 	b3CreateMeshShape( bodyId, &shapeDef, mesh, scale );
+
+	if ( materials != NULL )
+	{
+		free( materials );
+	}
 }
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_get_contact_hit_event_count( int worldHandle )
@@ -1464,6 +2227,60 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_transform( int bodyHandle, const dou
 	);
 }
 
+EMSCRIPTEN_KEEPALIVE void box3d_js_get_body_mass_data( int bodyHandle, double* outValues13 )
+{
+	if ( outValues13 == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < 13; ++i )
+	{
+		outValues13[i] = 0.0;
+	}
+
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	b3MassData massData = b3Body_GetMassData( bodyId );
+	outValues13[0] = massData.mass;
+	outValues13[1] = massData.center.x;
+	outValues13[2] = massData.center.y;
+	outValues13[3] = massData.center.z;
+	outValues13[4] = massData.inertia.cx.x;
+	outValues13[5] = massData.inertia.cx.y;
+	outValues13[6] = massData.inertia.cx.z;
+	outValues13[7] = massData.inertia.cy.x;
+	outValues13[8] = massData.inertia.cy.y;
+	outValues13[9] = massData.inertia.cy.z;
+	outValues13[10] = massData.inertia.cz.x;
+	outValues13[11] = massData.inertia.cz.y;
+	outValues13[12] = massData.inertia.cz.z;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_mass_data( int bodyHandle, const double* values13 )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || values13 == NULL )
+	{
+		return;
+	}
+
+	b3MassData massData = {
+		.mass = (float)values13[0],
+		.center = { values13[1], values13[2], values13[3] },
+		.inertia = {
+			{ (float)values13[4], (float)values13[5], (float)values13[6] },
+			{ (float)values13[7], (float)values13[8], (float)values13[9] },
+			{ (float)values13[10], (float)values13[11], (float)values13[12] },
+		},
+	};
+	b3Body_SetMassData( bodyId, massData );
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_get_body_linear_velocity( int bodyHandle, float* out3 )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
@@ -1535,6 +2352,28 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_gravity_scale( int bodyHandle, float
 	}
 
 	b3Body_SetGravityScale( bodyId, gravityScale );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_linear_damping( int bodyHandle, float linearDamping )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	b3Body_SetLinearDamping( bodyId, linearDamping );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_angular_damping( int bodyHandle, float angularDamping )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	b3Body_SetAngularDamping( bodyId, angularDamping );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_type( int bodyHandle, int bodyType )

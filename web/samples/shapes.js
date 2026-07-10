@@ -171,8 +171,11 @@ export function createShapeSamples( { BodyType } )
 			create( ctx )
 			{
 				const orientation = axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 20 * DEG_TO_RAD );
-				const sine = Math.sin( 20 * DEG_TO_RAD );
-				const cosine = Math.cos( 20 * DEG_TO_RAD );
+				const rotatedYAxis = {
+					x: 0,
+					y: Math.cos( 20 * DEG_TO_RAD ),
+					z: Math.sin( 20 * DEG_TO_RAD ),
+				};
 
 				return {
 					reset()
@@ -195,7 +198,11 @@ export function createShapeSamples( { BodyType } )
 							rotation: orientation,
 							size: { hx: 1, hy: 0.5, hz: 1 },
 							friction: 0.3,
-							angularVelocity: { x: 0, y: 25 * cosine, z: 25 * sine },
+							angularVelocity: {
+								x: 25 * rotatedYAxis.x,
+								y: 25 * rotatedYAxis.y,
+								z: 25 * rotatedYAxis.z,
+							},
 							color: 0xd07a45,
 						} );
 
@@ -351,6 +358,168 @@ export function createShapeSamples( { BodyType } )
 							`tangent velocity: (2, 0, 0)`,
 							`boxes: ${count}`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "conveyor-mesh",
+			label: "Shapes / Conveyor Mesh",
+			description:
+				"A browser port of the native multi-material conveyor mesh sample. The underlying custom mesh carries per-triangle material indices, and each material region applies its own tangent velocity through the wasm bridge.",
+			create( ctx )
+			{
+				const vertices = [
+					{ x: 2.16861, y: 1.0, z: -8.647873 },
+					{ x: 2.16861, y: -1.0, z: -8.647873 },
+					{ x: 2.076996, y: 1.0, z: 7.657975 },
+					{ x: 2.076996, y: -1.0, z: 7.657975 },
+					{ x: -4.037379, y: 1.0, z: -13.20873 },
+					{ x: -4.037379, y: -1.0, z: -13.20873 },
+					{ x: -4.037379, y: 1.0, z: 13.20873 },
+					{ x: -4.037379, y: -1.0, z: 13.20873 },
+					{ x: 7.00648, y: -1.0, z: 16.726564 },
+					{ x: 7.00648, y: 1.0, z: 16.726564 },
+					{ x: 6.719464, y: 1.0, z: 9.863844 },
+					{ x: 6.719464, y: -1.0, z: 9.863844 },
+					{ x: 16.463598, y: -1.0, z: 12.302612 },
+					{ x: 16.463598, y: 1.0, z: 12.302612 },
+					{ x: 10.010764, y: 1.0, z: 7.959058 },
+					{ x: 10.010764, y: -1.0, z: 7.959058 },
+					{ x: 16.463598, y: -1.0, z: -11.446518 },
+					{ x: 16.463598, y: 1.0, z: -11.446518 },
+					{ x: 9.855768, y: 1.0, z: -7.927011 },
+					{ x: 9.855768, y: -1.0, z: -7.927011 },
+					{ x: 7.919923, y: -1.0, z: -16.801933 },
+					{ x: 7.919923, y: 1.0, z: -16.801933 },
+					{ x: 6.476316, y: 1.0, z: -9.52032 },
+					{ x: 6.476316, y: -1.0, z: -9.52032 },
+				];
+				const indices = [
+					4, 2, 0, 3, 8, 7, 6, 5, 7, 5, 3, 7, 0, 3, 1, 1, 20, 23,
+					2, 9, 10, 2, 11, 3, 7, 9, 6, 8, 15, 12, 14, 17, 18, 10, 15, 11,
+					9, 14, 10, 8, 13, 9, 19, 20, 16, 12, 17, 13, 15, 16, 12, 14, 19, 15,
+					18, 23, 19, 18, 21, 22, 16, 21, 17, 0, 21, 4, 1, 22, 0, 4, 20, 5,
+					4, 6, 2, 3, 11, 8, 6, 4, 5, 5, 1, 3, 0, 2, 3, 1, 5, 20,
+					2, 6, 9, 2, 10, 11, 7, 8, 9, 8, 11, 15, 14, 13, 17, 10, 14, 15,
+					9, 13, 14, 8, 12, 13, 19, 23, 20, 12, 16, 17, 15, 19, 16, 14, 18, 19,
+					18, 22, 23, 18, 17, 21, 16, 20, 21, 0, 22, 21, 1, 23, 22, 4, 21, 20,
+				];
+				const materialIndices = new Array( indices.length / 3 ).fill( 0 );
+
+				// The OBJ top surface is six quads arranged around the conveyor loop.
+				// Assign materials to those source quads directly and let Box3D carry
+				// the material IDs through its internal triangle sorting.
+				materialIndices[0] = 3;
+				materialIndices[24] = 3;
+
+				materialIndices[6] = 2;
+				materialIndices[30] = 2;
+
+				materialIndices[12] = 1;
+				materialIndices[36] = 1;
+
+				materialIndices[10] = 6;
+				materialIndices[34] = 6;
+
+				materialIndices[19] = 5;
+				materialIndices[43] = 5;
+
+				materialIndices[21] = 4;
+				materialIndices[45] = 4;
+
+				const regionVelocities = [
+					{ x: 0.0, y: 0.0, z: 0.0 },
+					{ x: 0.7, y: 0.0, z: -0.2 },
+					{ x: 0.6, y: 0.0, z: 0.4 },
+					{ x: 0.0, y: 0.0, z: 1.3 },
+					{ x: -0.6, y: 0.0, z: 0.4 },
+					{ x: -0.75, y: 0.0, z: -0.4 },
+					{ x: 0.0, y: 0.0, z: -1.3 },
+				];
+				const regionColors = [
+					0x008000,
+					0xadff2f,
+					0xf0fff0,
+					0xff69b4,
+					0xcd5c5c,
+					0x4b0082,
+					0xfffff0,
+				];
+				let conveyorBodyHandle = 0;
+				const cylinderHandles = [];
+
+				return {
+					reset()
+					{
+						conveyorBodyHandle = 0;
+						cylinderHandles.length = 0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 20, hy: 0.5, hz: 20 } } );
+
+						const conveyorMesh = ctx.physics.createCustomMesh( {
+							vertices,
+							indices,
+							materialIndices,
+							useMedianSplit: true,
+							identifyEdges: true,
+							weldVertices: true,
+							weldTolerance: 0.002,
+						} );
+
+						conveyorBodyHandle = ctx.physics.createMeshBody( {
+							type: BodyType.static,
+							position: { x: 0, y: 0.5, z: 6 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 1, z: 0 }, 0.5 * Math.PI ),
+							mesh: conveyorMesh,
+							materials: regionVelocities.map( ( velocity, index ) => ( {
+								friction: 0.8,
+								tangentVelocity: {
+									x: 2 * velocity.x,
+									y: 2 * velocity.y,
+									z: 2 * velocity.z,
+								},
+								customColor: regionColors[index],
+								userMaterialId: index,
+							} ) ),
+							color: 0x7a858d,
+						} );
+
+						for ( let index = 0; index < 20; index += 1 )
+						{
+							cylinderHandles.push( ctx.physics.createCylinderBody( {
+								type: BodyType.dynamic,
+								position: { x: -8.5 + 0.9 * index, y: 1.5, z: -5.5 },
+								cylinder: { height: 0.3, radius: 0.15, yOffset: 0, sides: 32 },
+								friction: 0.8,
+								enableSleep: false,
+								color: 0xd28048,
+							} ) );
+						}
+
+						ctx.setCameraLookAt( { x: 25.3, y: 12.8, z: 11.8 }, { x: 0, y: 1, z: 0 } );
+					},
+
+					getStatusLines()
+					{
+						const materialCount = conveyorBodyHandle === 0 ? 0 : ctx.physics.getBodyFirstShapeMeshMaterialCount( conveyorBodyHandle );
+						const materialOne = conveyorBodyHandle === 0 || materialCount < 2
+							? null
+							: ctx.physics.getBodyFirstShapeMeshMaterial( conveyorBodyHandle, 1 );
+						const trackedVelocity = cylinderHandles.length === 0
+							? null
+							: ctx.physics.getBodyLinearVelocity( cylinderHandles[0] );
+						return [
+							`mesh materials: ${materialCount}`,
+							materialOne == null
+								? "material[1] tangent: unavailable"
+								: `material[1] tangent: (${materialOne.tangentVelocity.x.toFixed( 2 )}, ${materialOne.tangentVelocity.y.toFixed( 2 )}, ${materialOne.tangentVelocity.z.toFixed( 2 )})`,
+							"expected: cylinder groups should move in visibly different directions on different mesh patches",
+							trackedVelocity == null
+								? "tracked cylinder speed: n/a"
+								: `tracked cylinder speed: ${Math.hypot( trackedVelocity.x, trackedVelocity.y, trackedVelocity.z ).toFixed( 2 )}`,
+							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
 						];
 					},
 				};

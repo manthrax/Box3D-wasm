@@ -575,7 +575,7 @@ export function createContinuousSamples( { BodyType } )
 				{
 					if ( bulletHandle !== 0 )
 					{
-						ctx.box3d.api.destroyBody( bulletHandle );
+						ctx.physics.destroyBody( bulletHandle );
 					}
 
 					bulletHandle = ctx.physics.createHullBody( {
@@ -636,6 +636,23 @@ export function createContinuousSamples( { BodyType } )
 			},
 		},
 		createMeshDropSample( {
+			key: "continuous-mesh-drop",
+			label: "Continuous / Mesh Drop",
+			description:
+				"A browser port of the native mesh-drop stress test with the default box setup. Tiny dynamic bodies only collide with the waved mesh and arena walls, matching the native scene's core contact-robustness focus.",
+			shapeName: "box",
+			seed: 0x1234abcd,
+			createBody( ctx, options )
+			{
+				return ctx.physics.createBoxBody( {
+					...options,
+					size: { hx: 0.02, hy: 0.2, hz: 0.04 },
+					rollingResistance: 0.1,
+					color: 0xd67c42,
+				} );
+			},
+		} ),
+		createMeshDropSample( {
 			key: "continuous-mesh-drop-box",
 			label: "Continuous / Mesh Drop (Box)",
 			description:
@@ -649,6 +666,27 @@ export function createContinuousSamples( { BodyType } )
 					size: { hx: 0.02, hy: 0.2, hz: 0.04 },
 					rollingResistance: 0.1,
 					color: 0xd67c42,
+				} );
+			},
+		} ),
+		createMeshDropSample( {
+			key: "continuous-mesh-drop-unit-test",
+			label: "Continuous / Mesh Drop Unit Test",
+			description:
+				"A browser-oriented port of the native mesh-drop unit test. It runs a reduced capsule-focused version of the scene and flags failure if motion persists well past the expected settling window.",
+			shapeName: "capsule",
+			seed: 0x2345bcde,
+			createBody( ctx, options )
+			{
+				return ctx.physics.createCapsuleBody( {
+					...options,
+					capsule: {
+						center1: { x: 0, y: -0.2, z: 0 },
+						center2: { x: 0, y: 0.2, z: 0 },
+						radius: 0.05,
+					},
+					rollingResistance: 0.4,
+					color: 0xc68858,
 				} );
 			},
 		} ),

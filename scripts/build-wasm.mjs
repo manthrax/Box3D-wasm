@@ -37,6 +37,29 @@ async function ensureDir( directory )
 	await fs.mkdir( directory, { recursive: true } );
 }
 
+function patchRawLoaderSource( source )
+{
+	const initMemoryNeedle = "function initMemory(){if(ENVIRONMENT_IS_PTHREAD){return}{var INITIAL_MEMORY=16777216;wasmMemory=new WebAssembly.Memory({initial:INITIAL_MEMORY/65536,maximum:32768,shared:true})}updateMemoryViews()}";
+	const initMemoryReplacement = "function initMemory(){if(ENVIRONMENT_IS_PTHREAD){return}if(Module[\"wasmMemory\"]){wasmMemory=Module[\"wasmMemory\"]}else{var INITIAL_MEMORY=Module[\"initialMemoryBytes\"]||16777216;var MAXIMUM_MEMORY=Module[\"maximumMemoryBytes\"]||2147483648;if(INITIAL_MEMORY<=0||INITIAL_MEMORY%65536!==0){abort(\"initialMemoryBytes must be a positive multiple of 64 KiB\")}if(MAXIMUM_MEMORY<=0||MAXIMUM_MEMORY%65536!==0){abort(\"maximumMemoryBytes must be a positive multiple of 64 KiB\")}if(MAXIMUM_MEMORY<INITIAL_MEMORY){abort(\"maximumMemoryBytes must be greater than or equal to initialMemoryBytes\")}wasmMemory=new WebAssembly.Memory({initial:INITIAL_MEMORY/65536,maximum:MAXIMUM_MEMORY/65536,shared:true})}if(!(wasmMemory.buffer instanceof SharedArrayBuffer)){abort(\"wasmMemory must use shared memory when pthreads are enabled\")}updateMemoryViews()}";
+
+	if ( source.includes( initMemoryNeedle ) === false )
+	{
+		throw new Error( "Unable to patch box3d-raw.js: expected initMemory() signature not found." );
+	}
+
+	return source.replace( initMemoryNeedle, initMemoryReplacement );
+}
+
+async function patchRawLoader( filePath )
+{
+	const original = await fs.readFile( filePath, "utf8" );
+	const patched = patchRawLoaderSource( original );
+	if ( patched !== original )
+	{
+		await fs.writeFile( filePath, patched );
+	}
+}
+
 function runCommand( command )
 {
 	return new Promise( ( resolve, reject ) =>
@@ -77,6 +100,8 @@ async function copyArtifacts( sourceDir, destinationDir )
 		const destinationPath = path.join( destinationDir, filename );
 		await fs.copyFile( sourcePath, destinationPath );
 	}
+
+	await patchRawLoader( path.join( destinationDir, "box3d-raw.js" ) );
 
 	await fs.copyFile( path.join( rootDir, "wasm", "box3d.js" ), path.join( destinationDir, "box3d.js" ) );
 	await fs.copyFile( path.join( rootDir, "wasm", "demo.html" ), path.join( destinationDir, "demo.html" ) );

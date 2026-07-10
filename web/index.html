@@ -10,29 +10,45 @@
 	<div class="app-shell">
 		<canvas id="viewport"></canvas>
 		<aside class="panel">
-			<div class="eyebrow">Box3D WebAssembly</div>
-			<h1>Vanilla + Three.js Sample Host</h1>
-			<p class="lede">
-				A lightweight browser harness for porting native Box3D examples sample-by-sample, with click-and-drag body inspection in the viewport.
-			</p>
-			<label class="field">
-				<span>Sample</span>
-				<select id="sample-select"></select>
-			</label>
-			<div class="button-row">
-				<button id="restart-button" type="button">Restart</button>
-				<button id="pause-button" type="button">Pause</button>
-				<button id="step-button" type="button">Step</button>
+			<div class="panel-handle" id="panel-handle">
+				<div>
+					<div class="eyebrow">Box3D WebAssembly</div>
+					<h1>Keys: drag, R, P, -, =</h1>
+				</div>
+				<button id="panel-toggle" type="button" aria-label="Toggle panel">-</button>
 			</div>
-			<div id="custom-ui" class="custom-ui"></div>
-			<section>
-				<h2>Status</h2>
-				<div id="status-lines" class="status-lines"></div>
-			</section>
-			<section>
-				<h2>Notes</h2>
-				<div id="sample-description" class="notes"></div>
-			</section>
+			<div class="panel-body" id="panel-body">
+				<p class="lede">
+					Drag the header to move this panel. Press R to restart, P to pause, and - / = to switch samples.
+				</p>
+				<label class="field">
+					<span>Search</span>
+					<input id="sample-search" type="search" placeholder="Filter samples..." autocomplete="off" spellcheck="false">
+				</label>
+				<label class="field">
+					<span>Sample</span>
+					<select id="sample-select"></select>
+				</label>
+				<label class="field">
+					<span>Workers</span>
+					<input id="worker-count" type="number" min="1" step="1" inputmode="numeric">
+				</label>
+				<div id="worker-support-note" class="support-note" hidden></div>
+				<div class="button-row">
+					<button id="restart-button" type="button">Restart</button>
+					<button id="pause-button" type="button">Pause</button>
+					<button id="step-button" type="button">Step</button>
+				</div>
+				<div id="custom-ui" class="custom-ui"></div>
+				<section>
+					<h2>Status</h2>
+					<div id="status-lines" class="status-lines"></div>
+				</section>
+				<section>
+					<h2>Notes</h2>
+					<div id="sample-description" class="notes"></div>
+				</section>
+			</div>
 		</aside>
 	</div>
 	<script type="module" src="./app.js"></script>

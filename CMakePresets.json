@@ -38,7 +38,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_MAKE_PROGRAM": "C:/Python312/Scripts/ninja.exe",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
-        "BOX3D_EMSCRIPTEN_PTHREADS": "OFF",
+        "BOX3D_EMSCRIPTEN_PTHREADS": "ON",
         "BOX3D_SAMPLES": "OFF",
         "BOX3D_UNIT_TESTS": "OFF",
         "BOX3D_VALIDATE": "OFF",

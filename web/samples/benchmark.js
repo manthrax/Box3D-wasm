@@ -22,6 +22,7 @@ export function createBenchmarkSamples( { BodyType } )
 		{
 			key: "large-pyramid",
 			label: "Benchmark / Large Pyramid",
+			sceneOptions: { showGround: true, showGrid: true },
 			description: "A massive pyramid made of box bodies. Tests static-to-dynamic contact creation, contact resolution, and stacking stability.",
 			create( ctx )
 			{
@@ -64,6 +65,7 @@ export function createBenchmarkSamples( { BodyType } )
 		{
 			key: "wide-pyramid",
 			label: "Benchmark / Wide Pyramid",
+			sceneOptions: { showGround: true, showGrid: true },
 			description: "A wide pyramid structure, exercising contact updates and stacking solvers.",
 			create( ctx )
 			{
@@ -110,6 +112,7 @@ export function createBenchmarkSamples( { BodyType } )
 		{
 			key: "many-pyramids",
 			label: "Benchmark / Many Pyramids",
+			sceneOptions: { showGround: true, showGrid: true },
 			description: "A massive field of small pyramids to stress-test collision detection and multiple islands.",
 			create( ctx )
 			{
@@ -410,7 +413,7 @@ export function createBenchmarkSamples( { BodyType } )
 
 					buildUI( panel )
 					{
-						panel.add( "Magnitude", impulse, { min: 0, max: 2000, step: 100 }, ( val ) => { impulse = val; } );
+						panel.add( "Magnitude", impulse, { min: 0, max: 2000, step: 10 }, ( val ) => { impulse = val; } );
 						panel.addButton( "Explode", () => this.explode() );
 					},
 				};

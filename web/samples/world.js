@@ -1,3 +1,5 @@
+import { Human } from "./human.js";
+
 export function createWorldSamples( { BodyType } )
 {
 	function createSeededRandom( seed )
@@ -90,6 +92,7 @@ export function createWorldSamples( { BodyType } )
 		{
 			key: "hello-world",
 			label: "World / Hello World",
+			sceneOptions: { showGround: true, showGrid: true },
 			description:
 				"A small starter scene for the wasm host: a static ground box, one falling cube, and a camera framing that matches the simple smoke test.",
 			create( ctx )
@@ -286,6 +289,60 @@ export function createWorldSamples( { BodyType } )
 							"mesh-drop field settling on a wave mesh far from the origin",
 							failure ? "settling check: failed" : settled ? "settling check: passed" : "settling check: waiting",
 							`body count: ${bodyCount}`,
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "far-ragdolls",
+			label: "World / Far Ragdolls",
+			description:
+				"A browser port of the native far-ragdoll stress scene. A full ragdoll pile is spawned 1000 km from the origin so we can regression-test large-world rebasing with articulated bodies instead of only simple stacks.",
+			create( ctx )
+			{
+				const count = 20;
+				const offsetKilometers = ctx.box3d.api.isDoublePrecision() ? 1000 : 0;
+				const base = { x: offsetKilometers * 1000, y: 0, z: 0 };
+				const humans = Array.from( { length: count }, () => new Human() );
+
+				return {
+					reset()
+					{
+						ctx.physics.setWorldOrigin( base );
+						const groundMesh = ctx.physics.createGridMesh( {
+							xCount: 20,
+							zCount: 20,
+							cellWidth: 1.0,
+							materialCount: 1,
+							identifyEdges: true,
+						} );
+						ctx.physics.createMeshBody( {
+							type: BodyType.static,
+							position: { x: base.x, y: base.y - 1, z: base.z },
+							mesh: groundMesh,
+							color: 0x75838d,
+						} );
+
+						for ( let i = 0; i < count; i += 1 )
+						{
+							const position = {
+								x: base.x + 0.15 * ( i - 0.5 * count ),
+								y: base.y + 2.0 + 0.25 * i,
+								z: base.z + 0.15 * ( 0.5 * count - i ),
+							};
+							humans[i].spawn( ctx, position, 10.0, 0.5, 0.7, i, false );
+						}
+
+						ctx.setCameraLookAt( { x: 0, y: 8, z: 18 }, { x: 0, y: 2, z: 0 } );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`precision: ${ctx.box3d.api.isDoublePrecision() ? "double" : "single"}`,
+							`world offset: ${offsetKilometers.toFixed( 1 )} km`,
+							`ragdolls: ${count}`,
 						];
 					},
 				};

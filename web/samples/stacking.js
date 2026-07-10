@@ -256,6 +256,91 @@ export function createStackingSamples( { BodyType } )
 			},
 		},
 		{
+			key: "card-house",
+			label: "Stacking / Card House",
+			description:
+				"A thinner house-of-cards layout based on the native sample. Box3D's minimum stable hull thickness is still a practical constraint here, so the browser port stays thin-looking while using a slightly safer thickness for simulation and rendering.",
+			create( ctx )
+			{
+				const alpha = 25 * DEG_TO_RAD;
+				const cardHeight = 0.2;
+				const cardThickness = 0.001;
+				const cardDepth = 0.1;
+				const size = { hx: cardThickness, hy: cardHeight, hz: cardDepth };
+				const leftRotation = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, -alpha );
+				const rightRotation = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, alpha );
+				const horizontalRotation = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.5 * Math.PI );
+				const bodyColor = 0xd0a36e;
+
+				return {
+					reset()
+					{
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 10, hy: 0.5, hz: 10 } } );
+
+						let count = 5;
+						let z0 = 0;
+						let y = cardHeight - 0.02;
+						while ( count > 0 )
+						{
+							let z = z0;
+							for ( let index = 0; index < count; index += 1 )
+							{
+								if ( index !== count - 1 )
+								{
+									ctx.physics.createBoxBody( {
+										type: BodyType.dynamic,
+										position: { x: z + 0.25, y: y + cardHeight - 0.015, z: 0 },
+										rotation: horizontalRotation,
+										size,
+										friction: 0.7,
+										color: bodyColor,
+									} );
+								}
+
+								ctx.physics.createBoxBody( {
+									type: BodyType.dynamic,
+									position: { x: z, y, z: 0 },
+									rotation: leftRotation,
+									size,
+									friction: 0.7,
+									color: bodyColor,
+								} );
+
+								z += 0.175;
+
+								ctx.physics.createBoxBody( {
+									type: BodyType.dynamic,
+									position: { x: z, y, z: 0 },
+									rotation: rightRotation,
+									size,
+									friction: 0.7,
+									color: bodyColor,
+								} );
+
+								z += 0.175;
+							}
+
+							y += 2 * cardHeight - 0.03;
+							z0 += 0.175;
+							count -= 1;
+						}
+
+						ctx.setCameraLookAt( { x: 30, y: 10, z: 3 }, { x: 0.75, y: 1.0, z: 0.4 } );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`card thickness: ${cardThickness.toFixed( 3 )}`,
+							"expected: the thin card tower should settle and collapse plausibly without exploding",
+							`bodies: ${ctx.physics.getBodyCount()}`,
+						];
+					},
+				};
+			},
+		},
+		{
 			key: "card-house-thick",
 			label: "Stacking / Card House Thick",
 			description:

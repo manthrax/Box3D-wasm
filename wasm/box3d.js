@@ -6,6 +6,69 @@ export const BodyType = Object.freeze( {
 	dynamic: 2,
 } );
 
+const WASM_PAGE_SIZE = 64 * 1024;
+const DEFAULT_INITIAL_MEMORY_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAXIMUM_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
+
+function alignToWasmPage( byteCount, label )
+{
+	const aligned = Math.ceil( byteCount / WASM_PAGE_SIZE ) * WASM_PAGE_SIZE;
+	if ( aligned <= 0 )
+	{
+		throw new Error( `${label} must be greater than zero.` );
+	}
+
+	return aligned;
+}
+
+export function createBox3DMemory( options = {} )
+{
+	const initialBytes = alignToWasmPage( Math.trunc( options.initialBytes ?? DEFAULT_INITIAL_MEMORY_BYTES ), "initialBytes" );
+	const maximumBytes = alignToWasmPage( Math.trunc( options.maximumBytes ?? DEFAULT_MAXIMUM_MEMORY_BYTES ), "maximumBytes" );
+
+	if ( maximumBytes < initialBytes )
+	{
+		throw new Error( `maximumBytes (${maximumBytes}) must be greater than or equal to initialBytes (${initialBytes}).` );
+	}
+
+	return new WebAssembly.Memory( {
+		initial: initialBytes / WASM_PAGE_SIZE,
+		maximum: maximumBytes / WASM_PAGE_SIZE,
+		shared: true,
+	} );
+}
+
+function createModuleOptions( options = {} )
+{
+	const moduleOptions = { ...( options.moduleOptions ?? {} ) };
+	const memoryOptions = options.memory ?? null;
+
+	if ( memoryOptions == null )
+	{
+		return moduleOptions;
+	}
+
+	if ( moduleOptions.wasmMemory != null )
+	{
+		throw new Error( "Specify either options.memory or options.moduleOptions.wasmMemory, not both." );
+	}
+
+	if ( memoryOptions instanceof WebAssembly.Memory )
+	{
+		moduleOptions.wasmMemory = memoryOptions;
+		return moduleOptions;
+	}
+
+	if ( memoryOptions.wasmMemory instanceof WebAssembly.Memory )
+	{
+		moduleOptions.wasmMemory = memoryOptions.wasmMemory;
+		return moduleOptions;
+	}
+
+	moduleOptions.wasmMemory = createBox3DMemory( memoryOptions );
+	return moduleOptions;
+}
+
 function createRawNamespace( module )
 {
 	return new Proxy( {}, {
@@ -115,6 +178,16 @@ function configureBody( module, api, bodyHandle, options )
 		api.setBodyGravityScale( bodyHandle, options.gravityScale );
 	}
 
+	if ( options.linearDamping != null )
+	{
+		api.setBodyLinearDamping( bodyHandle, options.linearDamping );
+	}
+
+	if ( options.angularDamping != null )
+	{
+		api.setBodyAngularDamping( bodyHandle, options.angularDamping );
+	}
+
 	if ( options.enableSleep != null )
 	{
 		api.enableBodySleep( bodyHandle, options.enableSleep );
@@ -145,6 +218,20 @@ function getShapeOptions( options )
 function flattenVec3Array( values = [] )
 {
 	return values.flatMap( ( value ) => [ value.x ?? 0, value.y ?? 0, value.z ?? 0 ] );
+}
+
+function flattenSurfaceMaterials( materials = [] )
+{
+	return materials.flatMap( ( material ) => [
+		material.friction ?? 0.6,
+		material.restitution ?? 0,
+		material.rollingResistance ?? 0,
+		material.tangentVelocity?.x ?? 0,
+		material.tangentVelocity?.y ?? 0,
+		material.tangentVelocity?.z ?? 0,
+		material.userMaterialId ?? 0,
+		material.customColor ?? 0,
+	] );
 }
 
 function getMotionLockValues( motionLocks )
@@ -189,12 +276,23 @@ function createVanillaApi( module )
 		createWorld( options = {} )
 		{
 			const gravity = options.gravity ?? { x: 0, y: -10, z: 0 };
-			return module._box3d_js_create_world( gravity.x, gravity.y, gravity.z );
+			const workerCount = Math.max( 1, Math.trunc( options.workerCount ?? 1 ) );
+			return module._box3d_js_create_world( gravity.x, gravity.y, gravity.z, workerCount );
 		},
 
 		destroyWorld( worldHandle )
 		{
 			module._box3d_js_destroy_world( worldHandle );
+		},
+
+		setWorldWorkerCount( worldHandle, workerCount )
+		{
+			module._box3d_js_set_world_worker_count( worldHandle, Math.max( 1, Math.trunc( workerCount ?? 1 ) ) );
+		},
+
+		getWorldWorkerCount( worldHandle )
+		{
+			return module._box3d_js_get_world_worker_count( worldHandle );
 		},
 
 		stepWorld( worldHandle, timeStep = 1 / 60, subStepCount = 4 )
@@ -221,6 +319,33 @@ function createVanillaApi( module )
 			return module._box3d_js_get_world_awake_body_count( worldHandle );
 		},
 
+		getBodyFirstShapeMeshMaterialCount( bodyHandle )
+		{
+			return module._box3d_js_get_body_first_shape_mesh_material_count( bodyHandle );
+		},
+
+		getBodyFirstShapeMeshMaterial( bodyHandle, materialIndex )
+		{
+			const ptr = module._malloc( 8 * 8 );
+			try
+			{
+				module._box3d_js_get_body_first_shape_mesh_material( bodyHandle, materialIndex, ptr );
+				const values = readNumberArray( module, ptr, 8, "double" );
+				return {
+					friction: values[0],
+					restitution: values[1],
+					rollingResistance: values[2],
+					tangentVelocity: { x: values[3], y: values[4], z: values[5] },
+					userMaterialId: values[6],
+					customColor: values[7],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
 		getWorldCounters( worldHandle )
 		{
 			const ptr = module._malloc( 37 * 4 );
@@ -244,6 +369,556 @@ function createVanillaApi( module )
 					taskCount: values[12],
 					colorCounts: values.slice( 13, 37 ),
 				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		worldCastRayClosest( worldHandle, options = {} )
+		{
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const translation = options.translation ?? { x: 0, y: 0, z: 0 };
+			const filterValues = getFilterValues( options.filter );
+			const ptr = module._malloc( 10 * 8 );
+			try
+			{
+				withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+					withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
+						withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+							module._box3d_js_world_cast_ray_closest( worldHandle, originPtr, translationPtr, filterPtr, ptr )
+						)
+					)
+				);
+				const values = readNumberArray( module, ptr, 10, "double" );
+				return {
+					hit: values[0] !== 0,
+					point: { x: values[1], y: values[2], z: values[3] },
+					normal: { x: values[4], y: values[5], z: values[6] },
+					fraction: values[7],
+					triangleIndex: values[8],
+					childIndex: values[9],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		worldCastShapeClosest( worldHandle, options = {} )
+		{
+			const points = options.points ?? [];
+			const translation = options.translation ?? { x: 0, y: 0, z: 0 };
+			const radius = options.radius ?? 0;
+			const filterValues = getFilterValues( options.filter );
+			const ptr = module._malloc( 10 * 8 );
+			try
+			{
+				withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+					withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
+						withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+							module._box3d_js_world_cast_shape_closest(
+								worldHandle,
+								pointsPtr,
+								points.length,
+								radius,
+								translationPtr,
+								options.maxFraction ?? 1,
+								filterPtr,
+								options.ignoreInitialOverlap ? 1 : 0,
+								ptr
+							)
+						)
+					)
+				);
+				const values = readNumberArray( module, ptr, 10, "double" );
+				return {
+					hit: values[0] !== 0,
+					point: { x: values[1], y: values[2], z: values[3] },
+					normal: { x: values[4], y: values[5], z: values[6] },
+					fraction: values[7],
+					triangleIndex: values[8],
+					childIndex: values[9],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		shapeDistance( options = {} )
+		{
+			const transformA = options.transformA ?? {
+				position: { x: 0, y: 0, z: 0 },
+				rotation: { x: 0, y: 0, z: 0, w: 1 },
+			};
+			const transformB = options.transformB ?? {
+				position: { x: 0, y: 0, z: 0 },
+				rotation: { x: 0, y: 0, z: 0, w: 1 },
+			};
+			const pointsA = options.pointsA ?? [];
+			const pointsB = options.pointsB ?? [];
+			const radiusA = options.radiusA ?? 0;
+			const radiusB = options.radiusB ?? 0;
+			const ptr = module._malloc( 12 * 8 );
+			try
+			{
+				withOptionalArray( module, flattenVec3Array( pointsA ), "float", ( pointsAPtr ) =>
+					withOptionalArray(
+						module,
+						[
+							transformA.position?.x ?? 0,
+							transformA.position?.y ?? 0,
+							transformA.position?.z ?? 0,
+							transformA.rotation?.x ?? 0,
+							transformA.rotation?.y ?? 0,
+							transformA.rotation?.z ?? 0,
+							transformA.rotation?.w ?? 1,
+						],
+						"double",
+						( transformAPtr ) =>
+							withOptionalArray( module, flattenVec3Array( pointsB ), "float", ( pointsBPtr ) =>
+								withOptionalArray(
+									module,
+									[
+										transformB.position?.x ?? 0,
+										transformB.position?.y ?? 0,
+										transformB.position?.z ?? 0,
+										transformB.rotation?.x ?? 0,
+										transformB.rotation?.y ?? 0,
+										transformB.rotation?.z ?? 0,
+										transformB.rotation?.w ?? 1,
+									],
+									"double",
+									( transformBPtr ) =>
+										module._box3d_js_shape_distance(
+											pointsAPtr,
+											pointsA.length,
+											radiusA,
+											transformAPtr,
+											pointsBPtr,
+											pointsB.length,
+											radiusB,
+											transformBPtr,
+											options.useRadii ? 1 : 0,
+											ptr
+										)
+								)
+							)
+					)
+				);
+				const values = readNumberArray( module, ptr, 12, "double" );
+				return {
+					pointA: { x: values[0], y: values[1], z: values[2] },
+					pointB: { x: values[3], y: values[4], z: values[5] },
+					normal: { x: values[6], y: values[7], z: values[8] },
+					distance: values[9],
+					iterations: values[10],
+					simplexCount: values[11],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		timeOfImpact( options = {} )
+		{
+			const sweepA = options.sweepA ?? {};
+			const sweepB = options.sweepB ?? {};
+			const pointsA = options.pointsA ?? [];
+			const pointsB = options.pointsB ?? [];
+			const radiusA = options.radiusA ?? 0;
+			const radiusB = options.radiusB ?? 0;
+			const ptr = module._malloc( 12 * 8 );
+			try
+			{
+				withOptionalArray( module, flattenVec3Array( pointsA ), "float", ( pointsAPtr ) =>
+					withOptionalArray(
+						module,
+						[
+							sweepA.localCenter?.x ?? 0,
+							sweepA.localCenter?.y ?? 0,
+							sweepA.localCenter?.z ?? 0,
+							sweepA.c1?.x ?? 0,
+							sweepA.c1?.y ?? 0,
+							sweepA.c1?.z ?? 0,
+							sweepA.c2?.x ?? 0,
+							sweepA.c2?.y ?? 0,
+							sweepA.c2?.z ?? 0,
+							sweepA.q1?.x ?? 0,
+							sweepA.q1?.y ?? 0,
+							sweepA.q1?.z ?? 0,
+							sweepA.q1?.w ?? 1,
+							sweepA.q2?.x ?? 0,
+							sweepA.q2?.y ?? 0,
+							sweepA.q2?.z ?? 0,
+							sweepA.q2?.w ?? 1,
+						],
+						"double",
+						( sweepAPtr ) =>
+							withOptionalArray( module, flattenVec3Array( pointsB ), "float", ( pointsBPtr ) =>
+								withOptionalArray(
+									module,
+									[
+										sweepB.localCenter?.x ?? 0,
+										sweepB.localCenter?.y ?? 0,
+										sweepB.localCenter?.z ?? 0,
+										sweepB.c1?.x ?? 0,
+										sweepB.c1?.y ?? 0,
+										sweepB.c1?.z ?? 0,
+										sweepB.c2?.x ?? 0,
+										sweepB.c2?.y ?? 0,
+										sweepB.c2?.z ?? 0,
+										sweepB.q1?.x ?? 0,
+										sweepB.q1?.y ?? 0,
+										sweepB.q1?.z ?? 0,
+										sweepB.q1?.w ?? 1,
+										sweepB.q2?.x ?? 0,
+										sweepB.q2?.y ?? 0,
+										sweepB.q2?.z ?? 0,
+										sweepB.q2?.w ?? 1,
+									],
+									"double",
+									( sweepBPtr ) =>
+										module._box3d_js_time_of_impact(
+											pointsAPtr,
+											pointsA.length,
+											radiusA,
+											sweepAPtr,
+											pointsBPtr,
+											pointsB.length,
+											radiusB,
+											sweepBPtr,
+											options.maxFraction ?? 1,
+											ptr
+										)
+								)
+							)
+					)
+				);
+				const values = readNumberArray( module, ptr, 12, "double" );
+				return {
+					state: values[0],
+					point: { x: values[1], y: values[2], z: values[3] },
+					normal: { x: values[4], y: values[5], z: values[6] },
+					fraction: values[7],
+					distance: values[8],
+					distanceIterations: values[9],
+					pushBackIterations: values[10],
+					rootIterations: values[11],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		worldCollideMover( worldHandle, options = {} )
+		{
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const capsule = options.capsule ?? {
+				center1: { x: 0, y: -0.5, z: 0 },
+				center2: { x: 0, y: 0.5, z: 0 },
+				radius: 0.5,
+			};
+			const filterValues = getFilterValues( options.filter );
+			const maxPlanes = Math.max( 1, options.maxPlanes ?? 16 );
+			const ptr = module._malloc( maxPlanes * 7 * 8 );
+			try
+			{
+				return withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "double", ( originPtr ) =>
+					withOptionalArray(
+						module,
+						[
+							capsule.center1.x ?? 0,
+							capsule.center1.y ?? 0,
+							capsule.center1.z ?? 0,
+							capsule.center2.x ?? 0,
+							capsule.center2.y ?? 0,
+							capsule.center2.z ?? 0,
+							capsule.radius ?? 0,
+						],
+						"float",
+						( capsulePtr ) =>
+							withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+							{
+								const count = module._box3d_js_world_collide_mover( worldHandle, originPtr, capsulePtr, filterPtr, maxPlanes, ptr );
+								const values = readNumberArray( module, ptr, count * 7, "double" );
+								const planes = [];
+								for ( let index = 0; index < count; index += 1 )
+								{
+									const base = 7 * index;
+									planes.push( {
+										plane: {
+											normal: { x: values[base + 0], y: values[base + 1], z: values[base + 2] },
+											offset: values[base + 3],
+										},
+										point: { x: values[base + 4], y: values[base + 5], z: values[base + 6] },
+									} );
+								}
+								return planes;
+							} )
+					)
+				);
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		solveCollisionPlanes( options = {} )
+		{
+			const planes = options.planes ?? [];
+			const targetDelta = options.targetDelta ?? { x: 0, y: 0, z: 0 };
+			const ptr = module._malloc( 4 * 8 );
+			try
+			{
+				withOptionalArray(
+					module,
+					planes.flatMap( ( entry ) => [
+						entry.plane?.normal?.x ?? 0,
+						entry.plane?.normal?.y ?? 0,
+						entry.plane?.normal?.z ?? 0,
+						entry.plane?.offset ?? 0,
+						entry.point?.x ?? 0,
+						entry.point?.y ?? 0,
+						entry.point?.z ?? 0,
+					] ),
+					"double",
+					( planesPtr ) =>
+						withOptionalArray( module, [ targetDelta.x ?? 0, targetDelta.y ?? 0, targetDelta.z ?? 0 ], "float", ( targetDeltaPtr ) =>
+							module._box3d_js_solve_planes( targetDeltaPtr, planesPtr, planes.length, ptr )
+						)
+				);
+				const values = readNumberArray( module, ptr, 4, "double" );
+				return {
+					delta: { x: values[0], y: values[1], z: values[2] },
+					iterationCount: values[3],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		bodyCastRay( bodyHandle, options = {} )
+		{
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const translation = options.translation ?? { x: 0, y: 0, z: 0 };
+			const filterValues = getFilterValues( options.filter );
+			const ptr = module._malloc( 9 * 8 );
+			try
+			{
+				withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+					withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
+						withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+							module._box3d_js_body_cast_ray( bodyHandle, originPtr, translationPtr, filterPtr, options.maxFraction ?? 1, ptr )
+						)
+					)
+				);
+				const values = readNumberArray( module, ptr, 9, "double" );
+				return {
+					hit: values[0] !== 0,
+					point: { x: values[1], y: values[2], z: values[3] },
+					fraction: values[4],
+					triangleIndex: values[5],
+					normal: { x: values[6], y: values[7], z: values[8] },
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		bodyCastShape( bodyHandle, options = {} )
+		{
+			const bodyTransform = options.bodyTransform ?? {
+				position: { x: 0, y: 0, z: 0 },
+				rotation: { x: 0, y: 0, z: 0, w: 1 },
+			};
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const points = options.points ?? [];
+			const translation = options.translation ?? { x: 0, y: 0, z: 0 };
+			const radius = options.radius ?? 0;
+			const filterValues = getFilterValues( options.filter );
+			const ptr = module._malloc( 9 * 8 );
+			try
+			{
+				withOptionalArray(
+					module,
+					[
+						bodyTransform.position?.x ?? 0,
+						bodyTransform.position?.y ?? 0,
+						bodyTransform.position?.z ?? 0,
+						bodyTransform.rotation?.x ?? 0,
+						bodyTransform.rotation?.y ?? 0,
+						bodyTransform.rotation?.z ?? 0,
+						bodyTransform.rotation?.w ?? 1,
+					],
+					"double",
+					( transformPtr ) =>
+						withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+							withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+								withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
+									withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+										module._box3d_js_body_cast_shape(
+											bodyHandle,
+											transformPtr,
+											originPtr,
+											pointsPtr,
+											points.length,
+											radius,
+											translationPtr,
+											filterPtr,
+											options.maxFraction ?? 1,
+											options.canEncroach ? 1 : 0,
+											ptr
+										)
+									)
+								)
+							)
+						)
+				);
+				const values = readNumberArray( module, ptr, 9, "double" );
+				return {
+					hit: values[0] !== 0,
+					point: { x: values[1], y: values[2], z: values[3] },
+					fraction: values[4],
+					triangleIndex: values[5],
+					normal: { x: values[6], y: values[7], z: values[8] },
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		bodyOverlapShape( bodyHandle, options = {} )
+		{
+			const bodyTransform = options.bodyTransform ?? {
+				position: { x: 0, y: 0, z: 0 },
+				rotation: { x: 0, y: 0, z: 0, w: 1 },
+			};
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const points = options.points ?? [];
+			const radius = options.radius ?? 0;
+			const filterValues = getFilterValues( options.filter );
+			return withOptionalArray(
+				module,
+				[
+					bodyTransform.position?.x ?? 0,
+					bodyTransform.position?.y ?? 0,
+					bodyTransform.position?.z ?? 0,
+					bodyTransform.rotation?.x ?? 0,
+					bodyTransform.rotation?.y ?? 0,
+					bodyTransform.rotation?.z ?? 0,
+					bodyTransform.rotation?.w ?? 1,
+				],
+				"double",
+				( transformPtr ) =>
+					withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+						withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+							withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+								Boolean(
+									module._box3d_js_body_overlap_shape(
+										bodyHandle,
+										transformPtr,
+										originPtr,
+										pointsPtr,
+										points.length,
+										radius,
+										filterPtr
+									)
+								)
+							)
+						)
+					)
+			);
+		},
+
+		bodyCollideMover( bodyHandle, options = {} )
+		{
+			const bodyTransform = options.bodyTransform ?? {
+				position: { x: 0, y: 0, z: 0 },
+				rotation: { x: 0, y: 0, z: 0, w: 1 },
+			};
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
+			const capsule = options.capsule ?? {
+				center1: { x: 0, y: -0.5, z: 0 },
+				center2: { x: 0, y: 0.5, z: 0 },
+				radius: 0.5,
+			};
+			const filterValues = getFilterValues( options.filter );
+			const maxPlanes = Math.max( 1, options.maxPlanes ?? 8 );
+			const ptr = module._malloc( maxPlanes * 7 * 8 );
+			try
+			{
+				return withOptionalArray(
+					module,
+					[
+						bodyTransform.position?.x ?? 0,
+						bodyTransform.position?.y ?? 0,
+						bodyTransform.position?.z ?? 0,
+						bodyTransform.rotation?.x ?? 0,
+						bodyTransform.rotation?.y ?? 0,
+						bodyTransform.rotation?.z ?? 0,
+						bodyTransform.rotation?.w ?? 1,
+					],
+					"double",
+					( transformPtr ) =>
+						withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+							withOptionalArray(
+								module,
+								[
+									capsule.center1.x ?? 0,
+									capsule.center1.y ?? 0,
+									capsule.center1.z ?? 0,
+									capsule.center2.x ?? 0,
+									capsule.center2.y ?? 0,
+									capsule.center2.z ?? 0,
+									capsule.radius ?? 0,
+								],
+								"float",
+								( capsulePtr ) =>
+									withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+									{
+										const count = module._box3d_js_body_collide_mover(
+											bodyHandle,
+											transformPtr,
+											originPtr,
+											capsulePtr,
+											filterPtr,
+											maxPlanes,
+											ptr
+										);
+										const values = readNumberArray( module, ptr, count * 7, "double" );
+										const planes = [];
+										for ( let index = 0; index < count; index += 1 )
+										{
+											const base = 7 * index;
+											planes.push( {
+												plane: {
+													normal: { x: values[base + 0], y: values[base + 1], z: values[base + 2] },
+													offset: values[base + 3],
+												},
+												point: { x: values[base + 4], y: values[base + 5], z: values[base + 6] },
+											} );
+										}
+										return planes;
+									} )
+							)
+						)
+				);
 			}
 			finally
 			{
@@ -794,16 +1469,33 @@ function createVanillaApi( module )
 		{
 			const vertices = options.vertices ?? [];
 			const indices = options.indices ?? [];
+			const materialIndices = options.materialIndices ?? null;
 			return withOptionalArray( module, flattenVec3Array( vertices ), "float", ( verticesPtr ) =>
 				withOptionalArray( module, indices, "i32", ( indicesPtr ) =>
+					withOptionalArray( module, materialIndices, "i8", ( materialIndicesPtr ) =>
 					module._box3d_js_create_mesh(
 						verticesPtr,
 						vertices.length,
 						indicesPtr,
 						Math.floor( indices.length / 3 ),
+						materialIndicesPtr,
 						options.useMedianSplit === false ? 0 : 1,
-						options.identifyEdges ? 1 : 0
+						options.identifyEdges ? 1 : 0,
+						options.weldVertices === false ? 0 : 1,
+						options.weldTolerance ?? 0.002
 					)
+					)
+				)
+			);
+		},
+
+		setMeshMaterialIndices( meshHandle, materialIndices )
+		{
+			withOptionalArray( module, materialIndices, "i8", ( materialIndicesPtr ) =>
+				module._box3d_js_set_mesh_material_indices(
+					meshHandle,
+					materialIndicesPtr,
+					materialIndices?.length ?? 0
 				)
 			);
 		},
@@ -1167,6 +1859,8 @@ function createVanillaApi( module )
 			const restitution = options.restitution ?? 0;
 			const rollingResistance = options.rollingResistance ?? 0;
 			const filterValues = getFilterValues( shapeOptions.filter );
+			const materials = options.materials ?? null;
+			const flatMaterials = materials == null ? null : flattenSurfaceMaterials( materials );
 
 			withOptionalArray(
 				module,
@@ -1185,22 +1879,26 @@ function createVanillaApi( module )
 								],
 							"float",
 							( tangentVelocityPtr ) =>
-								module._box3d_js_add_mesh_shape(
-									bodyHandle,
-									options.meshHandle,
-									scalePtr,
-									density,
-									friction,
-									restitution,
-									rollingResistance,
-									shapeOptions.userMaterialId,
-									filterPtr,
-									tangentVelocityPtr,
-									shapeOptions.isSensor ? 1 : 0,
-									shapeOptions.enableSensorEvents ? 1 : 0,
-									shapeOptions.enableContactEvents ? 1 : 0,
-									shapeOptions.enableHitEvents ? 1 : 0,
-									shapeOptions.invokeContactCreation ? 1 : 0
+								withOptionalArray( module, flatMaterials, "double", ( materialsPtr ) =>
+									module._box3d_js_add_mesh_shape(
+										bodyHandle,
+										options.meshHandle,
+										scalePtr,
+										density,
+										friction,
+										restitution,
+										rollingResistance,
+										shapeOptions.userMaterialId,
+										filterPtr,
+										tangentVelocityPtr,
+										materialsPtr,
+										materials?.length ?? 0,
+										shapeOptions.isSensor ? 1 : 0,
+										shapeOptions.enableSensorEvents ? 1 : 0,
+										shapeOptions.enableContactEvents ? 1 : 0,
+										shapeOptions.enableHitEvents ? 1 : 0,
+										shapeOptions.invokeContactCreation ? 1 : 0
+									)
 								)
 						)
 					)
@@ -2040,6 +2738,49 @@ function createVanillaApi( module )
 			}
 		},
 
+		getBodyMassData( bodyHandle )
+		{
+			const ptr = module._malloc( 13 * 8 );
+			try
+			{
+				module._box3d_js_get_body_mass_data( bodyHandle, ptr );
+				const values = readNumberArray( module, ptr, 13, "double" );
+				return {
+					mass: values[0],
+					center: { x: values[1], y: values[2], z: values[3] },
+					inertia: {
+						cx: { x: values[4], y: values[5], z: values[6] },
+						cy: { x: values[7], y: values[8], z: values[9] },
+						cz: { x: values[10], y: values[11], z: values[12] },
+					},
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		setBodyMassData( bodyHandle, massData )
+		{
+			const values = [
+				massData.mass ?? 0,
+				massData.center?.x ?? 0,
+				massData.center?.y ?? 0,
+				massData.center?.z ?? 0,
+				massData.inertia?.cx?.x ?? 0,
+				massData.inertia?.cx?.y ?? 0,
+				massData.inertia?.cx?.z ?? 0,
+				massData.inertia?.cy?.x ?? 0,
+				massData.inertia?.cy?.y ?? 0,
+				massData.inertia?.cy?.z ?? 0,
+				massData.inertia?.cz?.x ?? 0,
+				massData.inertia?.cz?.y ?? 0,
+				massData.inertia?.cz?.z ?? 0,
+			];
+			withOptionalArray( module, values, "double", ( valuesPtr ) => module._box3d_js_set_body_mass_data( bodyHandle, valuesPtr ) );
+		},
+
 		getBodyLinearVelocity( bodyHandle )
 		{
 			const ptr = module._malloc( 3 * 4 );
@@ -2112,6 +2853,16 @@ function createVanillaApi( module )
 			module._box3d_js_set_body_gravity_scale( bodyHandle, gravityScale );
 		},
 
+		setBodyLinearDamping( bodyHandle, linearDamping )
+		{
+			module._box3d_js_set_body_linear_damping( bodyHandle, linearDamping );
+		},
+
+		setBodyAngularDamping( bodyHandle, angularDamping )
+		{
+			module._box3d_js_set_body_angular_damping( bodyHandle, angularDamping );
+		},
+
 		setBodyType( bodyHandle, bodyType )
 		{
 			module._box3d_js_set_body_type( bodyHandle, bodyType );
@@ -2180,7 +2931,7 @@ function createVanillaApi( module )
 export async function loadBox3D( options = {} )
 {
 	const moduleFactory = options.moduleFactory ?? createRawModule;
-	const module = await moduleFactory( options.moduleOptions ?? {} );
+	const module = await moduleFactory( createModuleOptions( options ) );
 
 	return {
 		module,

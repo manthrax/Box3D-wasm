@@ -7,6 +7,9 @@ import { createCompoundSamples } from "./samples/compound.js";
 import { createContinuousSamples } from "./samples/continuous.js";
 import { createEventSamples } from "./samples/events.js";
 import { createJointSamples } from "./samples/joints.js";
+import { createCollisionSamples } from "./samples/collision.js";
+import { createMeshSamples } from "./samples/mesh.js";
+import { createDeterminismSamples } from "./samples/determinism.js";
 import { createRobustnessSamples } from "./samples/robustness.js";
 import { createWorldSamples } from "./samples/world.js";
 import { createStackingSamples } from "./samples/stacking.js";
@@ -32,6 +35,43 @@ const cycleEnabled = [ "1", "true", "yes" ].includes( ( urlParams.get( "cycle" )
 const cycleSeconds = Number.isFinite( Number( urlParams.get( "cycleSeconds" ) ) ) && Number( urlParams.get( "cycleSeconds" ) ) > 0
 	? Number( urlParams.get( "cycleSeconds" ) )
 	: 4;
+const threadingSupport = getThreadingSupport();
+const hardwareConcurrency = Math.max( 1, Math.trunc( globalThis.navigator?.hardwareConcurrency ?? 1 ) );
+const maxDemoWorkerCount = threadingSupport.available ? hardwareConcurrency : 1;
+const STATUS_REFRESH_INTERVAL_MS = 250;
+
+function getThreadingSupport()
+{
+	if ( typeof Worker !== "function" )
+	{
+		return { available: false, reason: "Workers are not available in this browser." };
+	}
+
+	if ( typeof SharedArrayBuffer !== "function" )
+	{
+		return { available: false, reason: "SharedArrayBuffer is unavailable." };
+	}
+
+	if ( globalThis.crossOriginIsolated !== true )
+	{
+		return { available: false, reason: "Cross-origin isolation is required for wasm threads." };
+	}
+
+	return { available: true, reason: "" };
+}
+
+function clampDemoWorkerCount( value )
+{
+	const parsedValue = Number.parseInt( `${value}`, 10 );
+	if ( Number.isFinite( parsedValue ) === false )
+	{
+		return 1;
+	}
+
+	return Math.min( Math.max( parsedValue, 1 ), maxDemoWorkerCount );
+}
+
+let currentDemoWorkerCount = clampDemoWorkerCount( urlParams.get( "workers" ) ?? 1 );
 
 class PhysicsScene
 {
@@ -39,7 +79,7 @@ class PhysicsScene
 	{
 		this.box3d = box3d;
 		this.scene = scene;
-		this.worldOptions = {};
+		this.worldOptions = { workerCount: currentDemoWorkerCount };
 		this.worldHandle = box3d.api.createWorld( this.worldOptions );
 		this.worldOrigin = { x: 0, y: 0, z: 0 };
 		this.entries = [];
@@ -50,6 +90,23 @@ class PhysicsScene
 		this.tempObject = new THREE.Object3D();
 		this.tempMatrix = new THREE.Matrix4();
 		this.tempLocalObject = new THREE.Object3D();
+		this.tempColor = new THREE.Color();
+		this.debugLinePositions = [];
+		this.debugLineColors = [];
+		this.debugPointPositions = [];
+		this.debugPointColors = [];
+		this.debugLineGeometry = new THREE.BufferGeometry();
+		this.debugLineMaterial = new THREE.LineBasicMaterial( { vertexColors: true, toneMapped: false } );
+		this.debugLines = new THREE.LineSegments( this.debugLineGeometry, this.debugLineMaterial );
+		this.debugPointGeometry = new THREE.BufferGeometry();
+		this.debugPointMaterial = new THREE.PointsMaterial( { size: 6, vertexColors: true, sizeAttenuation: false, toneMapped: false } );
+		this.debugPoints = new THREE.Points( this.debugPointGeometry, this.debugPointMaterial );
+		this.debugLines.frustumCulled = false;
+		this.debugPoints.frustumCulled = false;
+		this.debugLineCapacity = 0;
+		this.debugPointCapacity = 0;
+		this.scene.add( this.debugLines );
+		this.scene.add( this.debugPoints );
 	}
 
 	dispose()
@@ -61,6 +118,12 @@ class PhysicsScene
 			geometry.dispose();
 		}
 		this.geometryCache.clear();
+		this.scene.remove( this.debugLines );
+		this.scene.remove( this.debugPoints );
+		this.debugLineGeometry.dispose();
+		this.debugPointGeometry.dispose();
+		this.debugLineMaterial.dispose();
+		this.debugPointMaterial.dispose();
 	}
 
 	destroyWorld()
@@ -86,11 +149,13 @@ class PhysicsScene
 		this.entries = [];
 		this.bodyEntries.clear();
 		this.instanceBuckets.clear();
+		this.clearDebug();
+		this.syncDebugDraw();
 	}
 
 	resetWorld( options = this.worldOptions )
 	{
-		this.worldOptions = { ...options };
+		this.worldOptions = { ...options, workerCount: currentDemoWorkerCount };
 		this.destroyWorld();
 		this.worldHandle = this.box3d.api.createWorld( this.worldOptions );
 	}
@@ -143,6 +208,132 @@ class PhysicsScene
 	getBodyAngularVelocity( bodyHandle )
 	{
 		return this.box3d.api.getBodyAngularVelocity( bodyHandle );
+	}
+
+	getBodyFirstShapeMeshMaterialCount( bodyHandle )
+	{
+		return this.box3d.api.getBodyFirstShapeMeshMaterialCount( bodyHandle );
+	}
+
+	getBodyFirstShapeMeshMaterial( bodyHandle, materialIndex )
+	{
+		return this.box3d.api.getBodyFirstShapeMeshMaterial( bodyHandle, materialIndex );
+	}
+
+	worldCastRayClosest( options )
+	{
+		return this.box3d.api.worldCastRayClosest( this.worldHandle, options );
+	}
+
+	worldCastShapeClosest( options )
+	{
+		return this.box3d.api.worldCastShapeClosest( this.worldHandle, options );
+	}
+
+	shapeDistance( options )
+	{
+		return this.box3d.api.shapeDistance( options );
+	}
+
+	timeOfImpact( options )
+	{
+		return this.box3d.api.timeOfImpact( options );
+	}
+
+	worldCollideMover( options )
+	{
+		return this.box3d.api.worldCollideMover( this.worldHandle, options );
+	}
+
+	bodyCastRay( bodyHandle, options )
+	{
+		return this.box3d.api.bodyCastRay( bodyHandle, options );
+	}
+
+	bodyCastShape( bodyHandle, options )
+	{
+		return this.box3d.api.bodyCastShape( bodyHandle, options );
+	}
+
+	bodyOverlapShape( bodyHandle, options )
+	{
+		return this.box3d.api.bodyOverlapShape( bodyHandle, options );
+	}
+
+	bodyCollideMover( bodyHandle, options )
+	{
+		return this.box3d.api.bodyCollideMover( bodyHandle, options );
+	}
+
+	clearDebug()
+	{
+		this.debugLinePositions.length = 0;
+		this.debugLineColors.length = 0;
+		this.debugPointPositions.length = 0;
+		this.debugPointColors.length = 0;
+	}
+
+	addDebugLine( start, end, color = 0xffffff )
+	{
+		const startScene = this.getScenePositionFromWorld( start );
+		const endScene = this.getScenePositionFromWorld( end );
+		this.tempColor.setHex( color );
+		this.debugLinePositions.push( startScene.x, startScene.y, startScene.z, endScene.x, endScene.y, endScene.z );
+		for ( let i = 0; i < 2; i += 1 )
+		{
+			this.debugLineColors.push( this.tempColor.r, this.tempColor.g, this.tempColor.b );
+		}
+	}
+
+	addDebugPoint( position, color = 0xffffff )
+	{
+		const scenePosition = this.getScenePositionFromWorld( position );
+		this.tempColor.setHex( color );
+		this.debugPointPositions.push( scenePosition.x, scenePosition.y, scenePosition.z );
+		this.debugPointColors.push( this.tempColor.r, this.tempColor.g, this.tempColor.b );
+	}
+
+	syncDebugDraw()
+	{
+		this.syncDebugGeometry( this.debugLineGeometry, "debugLineCapacity", this.debugLinePositions, this.debugLineColors );
+		this.syncDebugGeometry( this.debugPointGeometry, "debugPointCapacity", this.debugPointPositions, this.debugPointColors );
+	}
+
+	syncDebugGeometry( geometry, capacityKey, positions, colors )
+	{
+		const vertexCount = Math.floor( positions.length / 3 );
+		let capacity = this[capacityKey];
+
+		if ( capacity < vertexCount )
+		{
+			capacity = Math.max( 64, capacity );
+			while ( capacity < vertexCount )
+			{
+				capacity *= 2;
+			}
+
+			const positionAttribute = new THREE.BufferAttribute( new Float32Array( capacity * 3 ), 3 );
+			positionAttribute.setUsage( THREE.DynamicDrawUsage );
+			const colorAttribute = new THREE.BufferAttribute( new Float32Array( capacity * 3 ), 3 );
+			colorAttribute.setUsage( THREE.DynamicDrawUsage );
+			geometry.setAttribute( "position", positionAttribute );
+			geometry.setAttribute( "color", colorAttribute );
+			this[capacityKey] = capacity;
+		}
+
+		if ( capacity === 0 )
+		{
+			geometry.setDrawRange( 0, 0 );
+			return;
+		}
+
+		const positionAttribute = geometry.getAttribute( "position" );
+		const colorAttribute = geometry.getAttribute( "color" );
+		positionAttribute.array.set( positions, 0 );
+		colorAttribute.array.set( colors, 0 );
+		positionAttribute.needsUpdate = true;
+		colorAttribute.needsUpdate = true;
+		geometry.setDrawRange( 0, vertexCount );
 	}
 
 	getScenePositionFromWorld( position )
@@ -485,6 +676,16 @@ class PhysicsScene
 		} );
 	}
 
+	setMeshMaterialIndices( meshResource, materialIndices )
+	{
+		if ( meshResource?.handle == null )
+		{
+			return;
+		}
+
+		this.box3d.api.setMeshMaterialIndices( meshResource.handle, materialIndices );
+	}
+
 	createMeshBody( options )
 	{
 		const bodyType = options.type ?? this.box3d.BodyType.static;
@@ -729,9 +930,60 @@ class PhysicsScene
 		};
 		bucket.entries[slot] = entry;
 		this.entries.push( entry );
-		this.bodyEntries.set( bodyHandle, entry );
+		const bodyEntryList = this.bodyEntries.get( bodyHandle );
+		if ( bodyEntryList != null )
+		{
+			bodyEntryList.push( entry );
+		}
+		else
+		{
+			this.bodyEntries.set( bodyHandle, [ entry ] );
+		}
 		this.syncEntry( entry );
 		return bodyHandle;
+	}
+
+	removeEntry( entry )
+	{
+		const bucket = entry.bucket;
+		const lastSlot = bucket.count - 1;
+		const lastEntry = lastSlot >= 0 ? bucket.entries[lastSlot] : null;
+
+		if ( lastEntry != null && lastEntry !== entry )
+		{
+			bucket.entries[entry.slot] = lastEntry;
+			lastEntry.slot = entry.slot;
+			bucket.mesh.getMatrixAt( lastSlot, this.tempMatrix );
+			bucket.mesh.setMatrixAt( entry.slot, this.tempMatrix );
+			if ( bucket.mesh.instanceColor != null )
+			{
+				bucket.mesh.getColorAt( lastSlot, this.tempColor );
+				bucket.mesh.setColorAt( entry.slot, this.tempColor );
+				bucket.colorDirty = true;
+			}
+		}
+
+		bucket.entries[lastSlot] = undefined;
+		bucket.count = Math.max( 0, lastSlot );
+		bucket.mesh.count = bucket.count;
+		bucket.dirty = true;
+
+		const entryIndex = this.entries.indexOf( entry );
+		if ( entryIndex >= 0 )
+		{
+			this.entries.splice( entryIndex, 1 );
+		}
+	}
+
+	destroyBody( bodyHandle )
+	{
+		const bodyEntryList = this.bodyEntries.get( bodyHandle ) ?? [];
+		for ( const entry of [ ...bodyEntryList ] )
+		{
+			this.removeEntry( entry );
+		}
+		this.bodyEntries.delete( bodyHandle );
+		this.box3d.api.destroyBody( bodyHandle );
 	}
 
 	getOrCreateBucket( renderDefinition )
@@ -773,6 +1025,7 @@ class PhysicsScene
 			count: 0,
 			capacity: 16,
 			entries: [],
+			colorDirty: false,
 		};
 		this.instanceBuckets.set( bucketKey, bucket );
 		return bucket;
@@ -872,6 +1125,16 @@ class PhysicsScene
 		this.box3d.api.setBodyTransform( bodyHandle, transform );
 	}
 
+	getBodyMassData( bodyHandle )
+	{
+		return this.box3d.api.getBodyMassData( bodyHandle );
+	}
+
+	setBodyMassData( bodyHandle, massData )
+	{
+		this.box3d.api.setBodyMassData( bodyHandle, massData );
+	}
+
 	setBodyLinearVelocity( bodyHandle, velocity )
 	{
 		this.box3d.api.setBodyLinearVelocity( bodyHandle, velocity );
@@ -890,6 +1153,11 @@ class PhysicsScene
 	setBodyAwake( bodyHandle, awake = true )
 	{
 		this.box3d.api.setBodyAwake( bodyHandle, awake );
+	}
+
+	setBodyType( bodyHandle, bodyType )
+	{
+		this.box3d.api.setBodyType( bodyHandle, bodyType );
 	}
 
 	setBodyTargetTransform( bodyHandle, transform, timeStep, wake = true )
@@ -947,6 +1215,7 @@ class PhysicsScene
 		for ( const bucket of this.instanceBuckets.values() )
 		{
 			bucket.dirty = false;
+			bucket.colorDirty = false;
 		}
 
 		for ( const entry of this.entries )
@@ -959,6 +1228,10 @@ class PhysicsScene
 			if ( bucket.dirty )
 			{
 				bucket.mesh.instanceMatrix.needsUpdate = true;
+			}
+			if ( bucket.colorDirty && bucket.mesh.instanceColor != null )
+			{
+				bucket.mesh.instanceColor.needsUpdate = true;
 			}
 		}
 	}
@@ -1013,11 +1286,12 @@ class PhysicsScene
 			}
 		}
 
-		const color = new THREE.Color( colorHex );
-		entry.bucket.mesh.setColorAt( entry.slot, color );
-		if ( entry.bucket.mesh.instanceColor != null )
+		if ( colorHex !== entry.lastColorHex )
 		{
-			entry.bucket.mesh.instanceColor.needsUpdate = true;
+			this.tempColor.setHex( colorHex );
+			entry.bucket.mesh.setColorAt( entry.slot, this.tempColor );
+			entry.lastColorHex = colorHex;
+			entry.bucket.colorDirty = true;
 		}
 
 		entry.bucket.dirty = true;
@@ -1025,7 +1299,13 @@ class PhysicsScene
 }
 
 const canvas = document.querySelector( "#viewport" );
+const panel = document.querySelector( ".panel" );
+const panelHandle = document.querySelector( "#panel-handle" );
+const panelToggle = document.querySelector( "#panel-toggle" );
+const sampleSearch = document.querySelector( "#sample-search" );
 const sampleSelect = document.querySelector( "#sample-select" );
+const workerCountInput = document.querySelector( "#worker-count" );
+const workerSupportNote = document.querySelector( "#worker-support-note" );
 const restartButton = document.querySelector( "#restart-button" );
 const pauseButton = document.querySelector( "#pause-button" );
 const stepButton = document.querySelector( "#step-button" );
@@ -1039,6 +1319,24 @@ class SimplePanel
 	constructor( container )
 	{
 		this.container = container;
+	}
+
+	formatValue( value, step )
+	{
+		if ( !Number.isFinite( value ) )
+		{
+			return `${value}`;
+		}
+
+		if ( step == null || step === "any" )
+		{
+			return `${Math.round( value * 1000 ) / 1000}`;
+		}
+
+		const stepText = `${step}`;
+		const decimalIndex = stepText.indexOf( "." );
+		const decimals = decimalIndex === -1 ? 0 : stepText.length - decimalIndex - 1;
+		return value.toFixed( Math.min( decimals, 4 ) );
 	}
 
 	add( labelText, initialValue, options, onChange )
@@ -1058,20 +1356,20 @@ class SimplePanel
 		control.type = "range";
 		control.min = options.min ?? 0;
 		control.max = options.max ?? 100;
-		control.step = options.step ?? 1;
+		control.step = options.step ?? "any";
 		control.value = initialValue;
 		control.style.marginLeft = "8px";
 		control.style.flex = "1";
 
 		const valueLabel = document.createElement( "span" );
-		valueLabel.textContent = ` ${initialValue}`;
-		valueLabel.style.width = "40px";
+		valueLabel.textContent = ` ${this.formatValue( initialValue, options.step )}`;
+		valueLabel.style.width = "56px";
 		valueLabel.style.textAlign = "right";
 
 		control.oninput = ( e ) =>
 		{
 			const val = parseFloat( e.target.value );
-			valueLabel.textContent = ` ${val}`;
+			valueLabel.textContent = ` ${this.formatValue( val, options.step )}`;
 			onChange( val );
 		};
 
@@ -1142,6 +1440,123 @@ const grid = new THREE.GridHelper( 160, 40, 0x8b7357, 0xb79f81 );
 grid.position.y = -1;
 scene.add( grid );
 
+function applySceneChrome( sampleFactory )
+{
+	const sceneOptions = sampleFactory?.sceneOptions ?? {};
+	ground.visible = sceneOptions.showGround === true;
+	grid.visible = sceneOptions.showGrid === true;
+}
+
+function getVisibleSamples()
+{
+	const filterText = ( sampleSearch?.value ?? "" ).trim().toLowerCase();
+	return allSamples.filter( ( sample ) =>
+	{
+		if ( filterText.length === 0 )
+		{
+			return true;
+		}
+
+		return `${sample.label} ${sample.description ?? ""}`.toLowerCase().includes( filterText );
+	} );
+}
+
+function renderSampleOptions( selectedKey = null )
+{
+	sampleSelect.replaceChildren();
+	const visibleSamples = getVisibleSamples();
+
+	for ( const sample of visibleSamples )
+	{
+		const option = document.createElement( "option" );
+		option.value = sample.key;
+		option.textContent = sample.label;
+		sampleSelect.append( option );
+	}
+
+	const selectedSample =
+		visibleSamples.find( ( sample ) => sample.key === selectedKey )
+		?? visibleSamples.find( ( sample ) => sample.key === activeSampleFactory?.key )
+		?? visibleSamples[0]
+		?? allSamples[0];
+
+	if ( selectedSample != null )
+	{
+		sampleSelect.value = selectedSample.key;
+	}
+
+	return selectedSample;
+}
+
+function isTypingTarget( target )
+{
+	if ( target == null )
+	{
+		return false;
+	}
+
+	const tagName = target.tagName ?? "";
+	return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT" || target.isContentEditable === true;
+}
+
+function clampPanelToViewport()
+{
+	if ( panel == null )
+	{
+		return;
+	}
+
+	const bounds = panel.getBoundingClientRect();
+	const maxLeft = Math.max( 10, window.innerWidth - bounds.width - 10 );
+	const maxTop = Math.max( 10, window.innerHeight - bounds.height - 10 );
+	panel.style.left = `${Math.min( Math.max( bounds.left, 10 ), maxLeft )}px`;
+	panel.style.top = `${Math.min( Math.max( bounds.top, 10 ), maxTop )}px`;
+}
+
+function startPanelDrag( event )
+{
+	if ( panel == null || event.button !== 0 )
+	{
+		return;
+	}
+
+	const bounds = panel.getBoundingClientRect();
+	panelDragState = {
+		offsetX: event.clientX - bounds.left,
+		offsetY: event.clientY - bounds.top,
+	};
+	panel.style.right = "auto";
+	panel.style.bottom = "auto";
+	panel.setPointerCapture?.( event.pointerId );
+	event.preventDefault();
+}
+
+function updatePanelDrag( event )
+{
+	if ( panelDragState == null || panel == null )
+	{
+		return;
+	}
+
+	const width = panel.offsetWidth;
+	const height = panel.offsetHeight;
+	const left = Math.min( Math.max( event.clientX - panelDragState.offsetX, 10 ), Math.max( 10, window.innerWidth - width - 10 ) );
+	const top = Math.min( Math.max( event.clientY - panelDragState.offsetY, 10 ), Math.max( 10, window.innerHeight - height - 10 ) );
+	panel.style.left = `${left}px`;
+	panel.style.top = `${top}px`;
+}
+
+function stopPanelDrag( event )
+{
+	if ( panelDragState == null || panel == null )
+	{
+		return;
+	}
+
+	panelDragState = null;
+	panel.releasePointerCapture?.( event.pointerId );
+}
+
 let paused = false;
 let physicsScene = null;
 let activeSampleFactory = null;
@@ -1153,6 +1568,13 @@ let animationFrameHandle = 0;
 let pointerDrag = null;
 let allowSampleCameraReset = true;
 let cycleAccumulatorSeconds = 0;
+let panelDragState = null;
+let statusRefreshDeadlineMs = 0;
+let lastRenderedStatusKey = "";
+let lastPhysicsStepMs = 0;
+let minPhysicsStepMs = 0;
+let maxPhysicsStepMs = 0;
+let hasCapturedPhysicsStepRange = false;
 
 const appLifecycle = {
 	disposed: false,
@@ -1177,6 +1599,7 @@ const appLifecycle = {
 		canvas.removeEventListener( "pointerup", handlePointerUp );
 		canvas.removeEventListener( "pointercancel", handlePointerUp );
 		canvas.removeEventListener( "pointerleave", handlePointerUp );
+		canvas.removeEventListener( "wheel", handleWheel );
 		sampleSelect.replaceChildren();
 		sampleSelect.onchange = null;
 		restartButton.onclick = null;
@@ -1235,6 +1658,95 @@ function updateUrlForSample( sampleKey )
 	const nextQuery = nextParams.toString();
 	const nextUrl = `${window.location.pathname}${nextQuery.length > 0 ? `?${nextQuery}` : ""}${window.location.hash}`;
 	window.history.replaceState( null, "", nextUrl );
+}
+
+function updateUrlForWorkerCount( workerCount )
+{
+	const nextParams = new URLSearchParams( window.location.search );
+	nextParams.set( "workers", `${workerCount}` );
+	const nextQuery = nextParams.toString();
+	const nextUrl = `${window.location.pathname}${nextQuery.length > 0 ? `?${nextQuery}` : ""}${window.location.hash}`;
+	window.history.replaceState( null, "", nextUrl );
+}
+
+function syncWorkerCountInput()
+{
+	if ( workerCountInput == null )
+	{
+		return;
+	}
+
+	const workerField = workerCountInput.closest( ".field" );
+	if ( threadingSupport.available === false )
+	{
+		workerField?.setAttribute( "hidden", "" );
+		workerCountInput.disabled = true;
+		if ( workerSupportNote != null )
+		{
+			workerSupportNote.hidden = false;
+			workerSupportNote.textContent = `Workers unavailable: ${threadingSupport.reason}`;
+		}
+		return;
+	}
+
+	workerField?.removeAttribute( "hidden" );
+	workerCountInput.disabled = false;
+	if ( workerSupportNote != null )
+	{
+		workerSupportNote.hidden = true;
+		workerSupportNote.textContent = "";
+	}
+	workerCountInput.min = "1";
+	workerCountInput.max = `${maxDemoWorkerCount}`;
+	workerCountInput.value = `${currentDemoWorkerCount}`;
+	workerCountInput.title = `1-${maxDemoWorkerCount} workers (hardware concurrency)`;
+}
+
+function flushPhysicsTimingSample()
+{
+	if ( Number.isFinite( lastPhysicsStepMs ) === false || lastPhysicsStepMs <= 0 )
+	{
+		return;
+	}
+
+	if ( hasCapturedPhysicsStepRange === false )
+	{
+		minPhysicsStepMs = lastPhysicsStepMs;
+		maxPhysicsStepMs = lastPhysicsStepMs;
+		hasCapturedPhysicsStepRange = true;
+		return;
+	}
+
+	if ( lastPhysicsStepMs < minPhysicsStepMs )
+	{
+		minPhysicsStepMs = lastPhysicsStepMs;
+	}
+
+	if ( lastPhysicsStepMs > maxPhysicsStepMs )
+	{
+		maxPhysicsStepMs = lastPhysicsStepMs;
+	}
+}
+
+function applyDemoWorkerCount( workerCount )
+{
+	if ( threadingSupport.available === false )
+	{
+		syncWorkerCountInput();
+		return;
+	}
+
+	const nextWorkerCount = clampDemoWorkerCount( workerCount );
+	if ( nextWorkerCount === currentDemoWorkerCount )
+	{
+		syncWorkerCountInput();
+		return;
+	}
+
+	currentDemoWorkerCount = nextWorkerCount;
+	updateUrlForWorkerCount( currentDemoWorkerCount );
+	syncWorkerCountInput();
+	resetActiveSample( { preserveCamera: true } );
 }
 
 function updatePointerCoordinates( event )
@@ -1388,14 +1900,22 @@ function resize()
 
 function renderStatus()
 {
-	if ( activeSample?.getStatusLines == null )
+	const sampleStatusLines = activeSample?.getStatusLines?.() ?? [];
+	const statusLineItems = [
+		`step [${minPhysicsStepMs.toFixed( 2 )}, ${lastPhysicsStepMs.toFixed( 2 )}, ${maxPhysicsStepMs.toFixed( 2 )}] ms`,
+		threadingSupport.available ? `workers ${currentDemoWorkerCount}/${maxDemoWorkerCount}` : `workers unavailable`,
+		...sampleStatusLines,
+	];
+	const statusKey = statusLineItems.join( "\n" );
+
+	if ( statusKey === lastRenderedStatusKey )
 	{
-		statusLines.textContent = "";
 		return;
 	}
 
+	lastRenderedStatusKey = statusKey;
 	statusLines.replaceChildren(
-		...activeSample.getStatusLines().map( ( line ) =>
+		...statusLineItems.map( ( line ) =>
 		{
 			const node = document.createElement( "div" );
 			node.textContent = line;
@@ -1418,6 +1938,12 @@ function resetActiveSample( options = {} )
 {
 	stopPointerDrag();
 	physicsScene.resetWorld();
+	lastPhysicsStepMs = 0;
+	minPhysicsStepMs = 0;
+	maxPhysicsStepMs = 0;
+	hasCapturedPhysicsStepRange = false;
+	statusRefreshDeadlineMs = 0;
+	lastRenderedStatusKey = "";
 	allowSampleCameraReset = options.preserveCamera !== true;
 	if ( activeSample?.dispose instanceof Function )
 	{
@@ -1432,8 +1958,10 @@ function resetActiveSample( options = {} )
 	}
 	activeSample = activeSampleFactory.create( buildSampleContext() );
 	sampleElapsedSeconds = 0;
+	physicsScene.clearDebug();
 	activeSample.reset();
 	allowSampleCameraReset = true;
+	physicsScene.syncDebugDraw();
 	physicsScene.syncTransforms();
 	renderStatus();
 	sampleDescription.textContent = activeSampleFactory.description;
@@ -1458,6 +1986,7 @@ function setActiveSampleFactory( sampleFactory, options = {} )
 
 	activeSampleFactory = sampleFactory;
 	sampleSelect.value = activeSampleFactory.key;
+	applySceneChrome( activeSampleFactory );
 	cycleAccumulatorSeconds = 0;
 	if ( cycleEnabled )
 	{
@@ -1481,13 +2010,27 @@ function selectNextSample( options = {} )
 function stepSimulation()
 {
 	applyPointerDrag();
+	physicsScene.clearDebug();
 
 	if ( activeSample?.update != null )
 	{
 		activeSample.update( 1 / 60, sampleElapsedSeconds );
 	}
+	physicsScene.syncDebugDraw();
+	const physicsStepStartMs = performance.now();
 	physicsScene.step( 1 / 60, 4 );
+	lastPhysicsStepMs = performance.now() - physicsStepStartMs;
 	sampleElapsedSeconds += 1 / 60;
+	if ( sampleElapsedSeconds > 1 / 60 )
+	{
+		flushPhysicsTimingSample();
+	}
+	const nowMs = performance.now();
+	if ( nowMs >= statusRefreshDeadlineMs )
+	{
+		statusRefreshDeadlineMs = nowMs + STATUS_REFRESH_INTERVAL_MS;
+		renderStatus();
+	}
 	if ( cycleEnabled )
 	{
 		cycleAccumulatorSeconds += 1 / 60;
@@ -1497,20 +2040,21 @@ function stepSimulation()
 			selectNextSample();
 		}
 	}
-	renderStatus();
 }
 
 function mountSamples()
 {
-	sampleSelect.replaceChildren();
-
+	syncWorkerCountInput();
 	allSamples = [
 		...createBenchmarkSamples( box3d ),
 		...createBodySamples( box3d ),
+		...createCollisionSamples( box3d ),
 		...createCompoundSamples( box3d ),
 		...createContinuousSamples( box3d ),
+		...createDeterminismSamples( box3d ),
 		...createEventSamples( box3d ),
 		...createJointSamples( box3d ),
+		...createMeshSamples( box3d ),
 		...createRobustnessSamples( box3d ),
 		...createWorldSamples( box3d ),
 		...createStackingSamples( box3d ),
@@ -1519,23 +2063,45 @@ function mountSamples()
 		...createCharacterSamples( box3d ),
 		...createGeometrySamples( box3d ),
 	];
-
-	for ( const sample of allSamples )
-	{
-		const option = document.createElement( "option" );
-		option.value = sample.key;
-		option.textContent = sample.label;
-		sampleSelect.append( option );
-	}
-
 	const initialSampleKey = requestedSampleKey ?? readPersistedSample();
-	activeSampleFactory = allSamples.find( ( sample ) => sample.key === initialSampleKey ) ?? allSamples[0];
-	sampleSelect.value = activeSampleFactory.key;
+	activeSampleFactory = renderSampleOptions( initialSampleKey ) ?? allSamples[0];
+	applySceneChrome( activeSampleFactory );
 
 	sampleSelect.onchange = () =>
 	{
 		const nextSample = allSamples.find( ( sample ) => sample.key === sampleSelect.value ) ?? allSamples[0];
 		setActiveSampleFactory( nextSample );
+	};
+
+	sampleSearch.oninput = () =>
+	{
+		const selectedKey = activeSampleFactory?.key ?? sampleSelect.value;
+		const visibleSample = renderSampleOptions( selectedKey );
+		if ( visibleSample != null )
+		{
+			applySceneChrome( visibleSample );
+		}
+	};
+
+	workerCountInput.onchange = () =>
+	{
+		applyDemoWorkerCount( workerCountInput.value );
+	};
+
+	workerCountInput.onblur = () =>
+	{
+		syncWorkerCountInput();
+	};
+
+	panelHandle.addEventListener( "pointerdown", startPanelDrag );
+	window.addEventListener( "pointermove", updatePanelDrag );
+	window.addEventListener( "pointerup", stopPanelDrag );
+	window.addEventListener( "pointercancel", stopPanelDrag );
+	panelToggle.onclick = () =>
+	{
+		panel.classList.toggle( "is-collapsed" );
+		panelToggle.textContent = panel.classList.contains( "is-collapsed" ) ? "+" : "−";
+		clampPanelToViewport();
 	};
 
 	restartButton.onclick = () =>
@@ -1556,6 +2122,52 @@ function mountSamples()
 			stepSimulation();
 		}
 	};
+
+	window.addEventListener( "keydown", ( event ) =>
+	{
+		if ( event.repeat )
+		{
+			return;
+		}
+
+		if ( isTypingTarget( event.target ) )
+		{
+			return;
+		}
+
+		if ( event.key.toLowerCase() === "r" )
+		{
+			event.preventDefault();
+			resetActiveSample( { preserveCamera: true } );
+			return;
+		}
+
+		if ( event.key === "-" )
+		{
+			event.preventDefault();
+			if ( allSamples.length > 0 && activeSampleFactory != null )
+			{
+				const currentIndex = allSamples.findIndex( ( sample ) => sample.key === activeSampleFactory.key );
+				const previousIndex = currentIndex < 0 ? 0 : ( currentIndex - 1 + allSamples.length ) % allSamples.length;
+				setActiveSampleFactory( allSamples[previousIndex] );
+			}
+			return;
+		}
+
+		if ( event.key === "=" || event.key === "+" )
+		{
+			event.preventDefault();
+			selectNextSample();
+			return;
+		}
+
+		if ( event.key.toLowerCase() === "p" )
+		{
+			event.preventDefault();
+			paused = !paused;
+			pauseButton.textContent = paused ? "Resume" : "Pause";
+		}
+	} );
 }
 
 async function main()
@@ -1569,6 +2181,7 @@ async function main()
 	canvas.addEventListener( "pointerleave", handlePointerUp );
 	canvas.addEventListener( "wheel", handleWheel, { passive: false } );
 	mountSamples();
+	clampPanelToViewport();
 	resetActiveSample();
 	cycleAccumulatorSeconds = 0;
 

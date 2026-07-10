@@ -1,4 +1,4 @@
-import { DEG_TO_RAD } from "./helpers.js";
+import { DEG_TO_RAD, axisAngleToQuaternion } from "./helpers.js";
 
 export function createJointSamples( { BodyType } )
 {
@@ -308,6 +308,438 @@ export function createJointSamples( { BodyType } )
 							`constraint torque: ${ctx.box3d.api.getJointConstraintTorqueLength( jointHandle ).toFixed( 0 )}`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
+					},
+				};
+			},
+		},
+		{
+			key: "joint-top-down-friction",
+			label: "Joints / Top Down Friction",
+			description:
+				"A browser port of the native top-down friction scene. A field of zero-gravity bodies is constrained by motor joints so they scrub against the arena walls like pucks, and the explode action makes it easy to spot drift or unstable energy gain.",
+			sceneOptions: {
+				showGround: false,
+				showGrid: false,
+			},
+			create( ctx )
+			{
+				const dynamicHandles = [];
+
+				function spawnField()
+				{
+					const restitution = 0.8;
+					const rows = 10;
+					const cols = 10;
+					let x = -5;
+					let y = 15;
+
+					for ( let row = 0; row < rows; row += 1 )
+					{
+						for ( let col = 0; col < cols; col += 1 )
+						{
+							let bodyHandle = 0;
+							const position = { x, y, z: 0 };
+							const remainder = ( rows * row + col ) % 4;
+							if ( remainder === 0 )
+							{
+								bodyHandle = ctx.physics.createCapsuleBody( {
+									type: BodyType.dynamic,
+									position,
+									capsule: {
+										center1: { x: -0.25, y: 0, z: 0 },
+										center2: { x: 0.25, y: 0, z: 0 },
+										radius: 0.25,
+									},
+									restitution,
+									gravityScale: 0,
+									color: 0xcf7d47,
+								} );
+							}
+							else if ( remainder === 1 )
+							{
+								bodyHandle = ctx.physics.createSphereBody( {
+									type: BodyType.dynamic,
+									position,
+									radius: 0.35,
+									restitution,
+									gravityScale: 0,
+									color: 0xc99157,
+								} );
+							}
+							else
+							{
+								bodyHandle = ctx.physics.createBoxBody( {
+									type: BodyType.dynamic,
+									position,
+									size: { hx: 0.35, hy: 0.35, hz: 0.35 },
+									restitution,
+									gravityScale: 0,
+									color: 0xaa825f,
+								} );
+							}
+
+							dynamicHandles.push( bodyHandle );
+							ctx.box3d.api.createMotorJoint( ctx.physics.worldHandle, {
+								bodyA: groundHandle,
+								bodyB: bodyHandle,
+								collideConnected: true,
+								maxVelocityForce: 1000,
+								maxVelocityTorque: 1000,
+							} );
+
+							x += 1;
+						}
+
+						x = -5;
+						y -= 1;
+					}
+				}
+
+				let groundHandle = 0;
+
+				function explode()
+				{
+					ctx.box3d.api.explodeWorld( ctx.physics.worldHandle, {
+						position: { x: 0, y: 10, z: 0 },
+						radius: 10,
+						falloff: 5,
+						impulsePerArea: 10000,
+					} );
+				}
+
+				return {
+					reset()
+					{
+						dynamicHandles.length = 0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						groundHandle = ctx.physics.createBody( {
+							type: BodyType.static,
+							position: { x: 0, y: 0, z: 0 },
+						} );
+
+						ctx.physics.addBoxShape( groundHandle, {
+							bodyType: BodyType.static,
+							localPosition: { x: 0, y: 0, z: 0 },
+							size: { hx: 10, hy: 0.5, hz: 4 },
+							color: 0x75838d,
+						} );
+						ctx.physics.addBoxShape( groundHandle, {
+							bodyType: BodyType.static,
+							localPosition: { x: -10, y: 10, z: 0 },
+							size: { hx: 0.5, hy: 10, hz: 4 },
+							color: 0x67747d,
+						} );
+						ctx.physics.addBoxShape( groundHandle, {
+							bodyType: BodyType.static,
+							localPosition: { x: 10, y: 10, z: 0 },
+							size: { hx: 0.5, hy: 10, hz: 4 },
+							color: 0x67747d,
+						} );
+						ctx.physics.addBoxShape( groundHandle, {
+							bodyType: BodyType.static,
+							localPosition: { x: 0, y: 20, z: 0 },
+							size: { hx: 10, hy: 0.5, hz: 4 },
+							color: 0x75838d,
+						} );
+
+						spawnField();
+						ctx.setCameraLookAt( { x: 0, y: 0, z: 26 }, { x: 0, y: 10, z: 0 } );
+					},
+
+					buildUI( panel )
+					{
+						panel.addButton( "Explode", explode );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`dynamic bodies: ${dynamicHandles.length}`,
+							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
+							"expected: pieces should slide and ricochet around the arena after the blast",
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "joint-driving",
+			label: "Joints / Driving",
+			description:
+				"A browser port of the native driving sample. A chassis rides on four wheel joints over a wave mesh while WASD controls rear-wheel spin and front-wheel steering, which makes it a strong end-to-end test for the wheel-joint binding surface.",
+			sceneOptions: {
+				showGround: false,
+				showGrid: false,
+			},
+			create( ctx )
+			{
+				const keys = {};
+				let chassisHandle = 0;
+				let frontLeftJoint = 0;
+				let frontRightJoint = 0;
+				let rearLeftJoint = 0;
+				let rearRightJoint = 0;
+				let spinSpeed = 30;
+				let maxSpinTorque = 5;
+				let suspensionHertz = 4;
+				let suspensionDampingRatio = 0.7;
+				let lowerTranslation = -0.2;
+				let upperTranslation = 0.2;
+				let steeringHertz = 10;
+				let steeringDampingRatio = 0.7;
+				let lowerSteeringDegrees = -45;
+				let upperSteeringDegrees = 45;
+				const maxSteeringTorque = 5;
+
+				function handleKeyDown( event )
+				{
+					keys[event.key.toLowerCase()] = true;
+				}
+
+				function handleKeyUp( event )
+				{
+					keys[event.key.toLowerCase()] = false;
+				}
+
+				function setSuspensionLimits()
+				{
+					ctx.box3d.api.setWheelJointSuspensionLimits( frontLeftJoint, lowerTranslation, upperTranslation );
+					ctx.box3d.api.setWheelJointSuspensionLimits( frontRightJoint, lowerTranslation, upperTranslation );
+					ctx.box3d.api.setWheelJointSuspensionLimits( rearLeftJoint, lowerTranslation, upperTranslation );
+					ctx.box3d.api.setWheelJointSuspensionLimits( rearRightJoint, lowerTranslation, upperTranslation );
+				}
+
+				function setSuspensionHertzAll()
+				{
+					ctx.box3d.api.setWheelJointSuspensionHertz( frontLeftJoint, suspensionHertz );
+					ctx.box3d.api.setWheelJointSuspensionHertz( frontRightJoint, suspensionHertz );
+					ctx.box3d.api.setWheelJointSuspensionHertz( rearLeftJoint, suspensionHertz );
+					ctx.box3d.api.setWheelJointSuspensionHertz( rearRightJoint, suspensionHertz );
+				}
+
+				function setSuspensionDampingAll()
+				{
+					ctx.box3d.api.setWheelJointSuspensionDampingRatio( frontLeftJoint, suspensionDampingRatio );
+					ctx.box3d.api.setWheelJointSuspensionDampingRatio( frontRightJoint, suspensionDampingRatio );
+					ctx.box3d.api.setWheelJointSuspensionDampingRatio( rearLeftJoint, suspensionDampingRatio );
+					ctx.box3d.api.setWheelJointSuspensionDampingRatio( rearRightJoint, suspensionDampingRatio );
+				}
+
+				function setSteeringHertzAll()
+				{
+					ctx.box3d.api.setWheelJointSteeringHertz( frontLeftJoint, steeringHertz );
+					ctx.box3d.api.setWheelJointSteeringHertz( frontRightJoint, steeringHertz );
+				}
+
+				function setSteeringDampingAll()
+				{
+					ctx.box3d.api.setWheelJointSteeringDampingRatio( frontLeftJoint, steeringDampingRatio );
+					ctx.box3d.api.setWheelJointSteeringDampingRatio( frontRightJoint, steeringDampingRatio );
+				}
+
+				function setSteeringLimitsAll()
+				{
+					ctx.box3d.api.setWheelJointSteeringLimits( frontLeftJoint, lowerSteeringDegrees * DEG_TO_RAD, upperSteeringDegrees * DEG_TO_RAD );
+					ctx.box3d.api.setWheelJointSteeringLimits( frontRightJoint, lowerSteeringDegrees * DEG_TO_RAD, upperSteeringDegrees * DEG_TO_RAD );
+				}
+
+				function setSpinTorqueAll()
+				{
+					ctx.box3d.api.setWheelJointMaxSpinTorque( rearLeftJoint, maxSpinTorque );
+					ctx.box3d.api.setWheelJointMaxSpinTorque( rearRightJoint, maxSpinTorque );
+				}
+
+				return {
+					reset()
+					{
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						const groundHandle = ctx.physics.createBody( {
+							type: BodyType.static,
+							position: { x: 0, y: 0, z: 0 },
+						} );
+						const waveMesh = ctx.physics.createWaveMesh( {
+							xCount: 50,
+							zCount: 50,
+							cellWidth: 4,
+							amplitude: 2,
+							rowFrequency: 0.02,
+							columnFrequency: 0.04,
+						} );
+						ctx.physics.addMeshShape( groundHandle, {
+							mesh: waveMesh,
+							bodyType: BodyType.static,
+							color: 0x75838d,
+						} );
+
+						chassisHandle = ctx.physics.createBoxBody( {
+							type: BodyType.dynamic,
+							position: { x: 0, y: 2.5, z: 0 },
+							size: { hx: 2, hy: 0.5, hz: 1 },
+							density: 0.5,
+							color: 0xc77543,
+						} );
+
+						ctx.box3d.api.createParallelJoint( ctx.physics.worldHandle, {
+							bodyA: groundHandle,
+							bodyB: chassisHandle,
+							localFrameA: {
+								position: { x: 0, y: 0, z: 0 },
+								rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI ),
+							},
+							localFrameB: {
+								position: { x: 0, y: 0, z: 0 },
+								rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI ),
+							},
+							drawScale: 2,
+							collideConnected: true,
+							hertz: 0.5,
+							dampingRatio: 1,
+						} );
+
+						const wheelRotation = axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.5 * Math.PI );
+						const wheelFrameA = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.5 * Math.PI );
+						const wheelFrameB = axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI );
+
+						function createWheelBody( position )
+						{
+							return ctx.physics.createSphereBody( {
+								type: BodyType.dynamic,
+								position,
+								rotation: wheelRotation,
+								radius: 0.4,
+								density: 2,
+								friction: 3,
+								color: 0xd7a05f,
+							} );
+						}
+
+						function createWheelJoint( wheelBody, localPosition, enableSteering, enableSpinMotor )
+						{
+							return ctx.box3d.api.createWheelJoint( ctx.physics.worldHandle, {
+								bodyA: chassisHandle,
+								bodyB: wheelBody,
+								localFrameA: {
+									position: localPosition,
+									rotation: wheelFrameA,
+								},
+								localFrameB: {
+									position: { x: 0, y: 0, z: 0 },
+									rotation: wheelFrameB,
+								},
+								enableSuspensionLimit: true,
+								lowerSuspensionLimit: lowerTranslation,
+								upperSuspensionLimit: upperTranslation,
+								enableSuspensionSpring: true,
+								suspensionHertz,
+								suspensionDampingRatio,
+								enableSpinMotor,
+								spinSpeed: 0,
+								maxSpinTorque,
+								enableSteering,
+								steeringHertz,
+								steeringDampingRatio,
+								targetSteeringAngle: 0,
+								maxSteeringTorque,
+								enableSteeringLimit: true,
+								lowerSteeringLimit: lowerSteeringDegrees * DEG_TO_RAD,
+								upperSteeringLimit: upperSteeringDegrees * DEG_TO_RAD,
+							} );
+						}
+
+						frontLeftJoint = createWheelJoint( createWheelBody( { x: 1.5, y: 2, z: 0.8 } ), { x: 1.5, y: -0.5, z: 0.8 }, true, false );
+						frontRightJoint = createWheelJoint( createWheelBody( { x: 1.5, y: 2, z: -0.8 } ), { x: 1.5, y: -0.5, z: -0.8 }, true, false );
+						rearLeftJoint = createWheelJoint( createWheelBody( { x: -1.5, y: 2, z: 0.8 } ), { x: -1.5, y: -0.5, z: 0.8 }, false, true );
+						rearRightJoint = createWheelJoint( createWheelBody( { x: -1.5, y: 2, z: -0.8 } ), { x: -1.5, y: -0.5, z: -0.8 }, false, true );
+
+						window.addEventListener( "keydown", handleKeyDown );
+						window.addEventListener( "keyup", handleKeyUp );
+						ctx.setCameraLookAt( { x: 8, y: 8, z: 20 }, { x: 0, y: 2, z: 0 } );
+					},
+
+					update()
+					{
+						const throttle = ( keys["w"] ? 1 : 0 ) - ( keys["s"] ? 1 : 0 );
+						const steering = ( keys["a"] ? 1 : 0 ) - ( keys["d"] ? 1 : 0 );
+						const maxSteeringAngle = 0.25 * Math.PI;
+
+						ctx.box3d.api.setWheelJointTargetSteeringAngle( frontLeftJoint, maxSteeringAngle * steering );
+						ctx.box3d.api.setWheelJointTargetSteeringAngle( frontRightJoint, maxSteeringAngle * steering );
+						ctx.box3d.api.setWheelJointSpinMotorSpeed( rearLeftJoint, -spinSpeed * throttle );
+						ctx.box3d.api.setWheelJointSpinMotorSpeed( rearRightJoint, -spinSpeed * throttle );
+
+						if ( chassisHandle !== 0 )
+						{
+							const transform = ctx.physics.getBodyTransform( chassisHandle );
+							ctx.setCameraLookAt( { x: transform.position.x + 8, y: transform.position.y + 6, z: transform.position.z + 16 }, transform.position );
+						}
+					},
+
+					buildUI( panel )
+					{
+						panel.add( "Spin Speed", spinSpeed, { min: 0, max: 100, step: 1 }, ( value ) =>
+						{
+							spinSpeed = value;
+						} );
+						panel.add( "Spin Torque", maxSpinTorque, { min: 0, max: 100, step: 0.5 }, ( value ) =>
+						{
+							maxSpinTorque = value;
+							setSpinTorqueAll();
+						} );
+						panel.add( "Suspension Min", lowerTranslation, { min: -1, max: 1, step: 0.05 }, ( value ) =>
+						{
+							lowerTranslation = Math.min( value, upperTranslation );
+							setSuspensionLimits();
+						} );
+						panel.add( "Suspension Max", upperTranslation, { min: -1, max: 1, step: 0.05 }, ( value ) =>
+						{
+							upperTranslation = Math.max( value, lowerTranslation );
+							setSuspensionLimits();
+						} );
+						panel.add( "Suspension Hz", suspensionHertz, { min: 0, max: 10, step: 0.1 }, ( value ) =>
+						{
+							suspensionHertz = value;
+							setSuspensionHertzAll();
+						} );
+						panel.add( "Suspension Damp", suspensionDampingRatio, { min: 0, max: 2, step: 0.05 }, ( value ) =>
+						{
+							suspensionDampingRatio = value;
+							setSuspensionDampingAll();
+						} );
+						panel.add( "Steering Hz", steeringHertz, { min: 0, max: 10, step: 0.1 }, ( value ) =>
+						{
+							steeringHertz = value;
+							setSteeringHertzAll();
+						} );
+						panel.add( "Steering Damp", steeringDampingRatio, { min: 0, max: 2, step: 0.05 }, ( value ) =>
+						{
+							steeringDampingRatio = value;
+							setSteeringDampingAll();
+						} );
+						panel.add( "Steer Min", lowerSteeringDegrees, { min: -90, max: 0, step: 1 }, ( value ) =>
+						{
+							lowerSteeringDegrees = value;
+							setSteeringLimitsAll();
+						} );
+						panel.add( "Steer Max", upperSteeringDegrees, { min: 0, max: 90, step: 1 }, ( value ) =>
+						{
+							upperSteeringDegrees = value;
+							setSteeringLimitsAll();
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							"use WASD to drive",
+							`front steering: ${( ctx.box3d.api.getWheelJointSteeringAngle( frontLeftJoint ) / DEG_TO_RAD ).toFixed( 1 )} / ${( ctx.box3d.api.getWheelJointSteeringAngle( frontRightJoint ) / DEG_TO_RAD ).toFixed( 1 )} deg`,
+							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
+						];
+					},
+
+					dispose()
+					{
+						window.removeEventListener( "keydown", handleKeyDown );
+						window.removeEventListener( "keyup", handleKeyUp );
 					},
 				};
 			},

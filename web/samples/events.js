@@ -525,7 +525,7 @@ export function createEventSamples( { BodyType } )
 				{
 					if ( bulletHandle !== 0 )
 					{
-						ctx.box3d.api.destroyBody( bulletHandle );
+						ctx.physics.destroyBody( bulletHandle );
 					}
 
 					recentEvents.length = 0;
