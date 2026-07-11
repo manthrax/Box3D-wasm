@@ -1,4 +1,5 @@
 import { Human } from "./human.js";
+import { axisAngleToQuaternion } from "./helpers.js";
 
 export function createRagdollSamples({ BodyType }) {
 	return [
@@ -13,24 +14,7 @@ export function createRagdollSamples({ BodyType }) {
 				let human = new Human();
 
 				function spawn() {
-					if (human.isSpawned) {
-						// Clean up existing human
-						for (const bone of human.bones) {
-							if (bone.bodyHandle !== 0) {
-								ctx.physics.destroyBody(bone.bodyHandle);
-								bone.bodyHandle = 0;
-							}
-							if (bone.jointHandle !== 0) {
-								ctx.box3d.api.destroyJoint(bone.jointHandle);
-								bone.jointHandle = 0;
-							}
-						}
-						for (const filterHandle of human.filterJointHandles) {
-							ctx.box3d.api.destroyJoint(filterHandle);
-						}
-						human.filterJointHandles = [];
-						human.isSpawned = false;
-					}
+					human.destroy(ctx);
 
 					human.spawn(ctx, { x: 0.0, y: 2.0, z: 0.0 }, jointFrictionTorque, jointHertz, jointDampingRatio, 1, false);
 				}
@@ -123,28 +107,7 @@ export function createRagdollSamples({ BodyType }) {
 
 				function spawn()
 				{
-					if ( human.isSpawned )
-					{
-						for ( const bone of human.bones )
-						{
-							if ( bone.bodyHandle !== 0 )
-							{
-								ctx.physics.destroyBody( bone.bodyHandle );
-								bone.bodyHandle = 0;
-							}
-							if ( bone.jointHandle !== 0 )
-							{
-								ctx.box3d.api.destroyJoint( bone.jointHandle );
-								bone.jointHandle = 0;
-							}
-						}
-						for ( const filterHandle of human.filterJointHandles )
-						{
-							ctx.box3d.api.destroyJoint( filterHandle );
-						}
-						human.filterJointHandles = [];
-						human.isSpawned = false;
-					}
+					human.destroy( ctx );
 
 					human.spawn( ctx, { x: 0.0, y: 1.0, z: 0.0 }, jointFrictionTorque, jointHertz, jointDampingRatio, 1, false );
 				}
@@ -215,6 +178,145 @@ export function createRagdollSamples({ BodyType }) {
 							}
 						} );
 						panel.addButton( "Respawn", spawn );
+					},
+				};
+			},
+		},
+		{
+			key: "ragdoll-pose",
+			label: "Ragdoll / Pose",
+			description: "A browser port of the experimental pose-control scene. The ragdoll keeps its bind pose with joint motors while the pelvis is driven through an oscillating path, exposing motor stiffness, damping, and target-following behavior.",
+			create( ctx )
+			{
+				let human = new Human();
+				let motorized = false;
+				let motorHertz = 1.0;
+				let poseControl = true;
+				let poseHertz = 2.0;
+				let angularVelocity = 0.0;
+				let angle = 0.0;
+				let time = 0.0;
+
+				function syncPoseState()
+				{
+					if ( human.isSpawned === false )
+					{
+						return;
+					}
+
+					const activeHertz = poseControl ? poseHertz : motorHertz;
+					human.setJointSpringHertz( ctx, activeHertz );
+					human.setMotorsEnabled( ctx, motorized || poseControl );
+				}
+
+				function spawn()
+				{
+					human.destroy( ctx );
+					human = new Human();
+					human.spawn( ctx, { x: 0.0, y: 0.1, z: 0.0 }, 5.0, poseControl ? poseHertz : motorHertz, 0.7, 1, false );
+					syncPoseState();
+				}
+
+				return {
+					reset()
+					{
+						time = 0.0;
+						angle = 0.0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+
+						const groundBody = ctx.physics.createBody( {
+							type: BodyType.static,
+							position: { x: 0, y: 0, z: 0 },
+						} );
+						const gridMesh = ctx.physics.createGridMesh( {
+							xCount: 4,
+							zCount: 4,
+							cellWidth: 2.0,
+						} );
+						ctx.physics.addMeshShape( groundBody, {
+							mesh: gridMesh,
+							bodyType: BodyType.static,
+							color: 0x75838d,
+						} );
+						ctx.physics.addBoxShape( groundBody, {
+							bodyType: BodyType.static,
+							localPosition: { x: -3.0, y: 0.5, z: 0.0 },
+							size: { hx: 0.25, hy: 0.5, hz: 3.0 },
+							color: 0x6c7b84,
+						} );
+
+						ctx.physics.createCylinderBody( {
+							type: BodyType.dynamic,
+							position: { x: 3.0, y: 0.5, z: 0.0 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.5 * Math.PI ),
+							cylinder: { height: 1.0, radius: 0.5, yOffset: 0.0, sides: 16 },
+							color: 0xd69b4e,
+						} );
+
+						spawn();
+						ctx.setCameraLookAt( { x: 6, y: 4, z: 8 }, { x: 0, y: 1, z: 0 } );
+					},
+
+					update( dt )
+					{
+						time += dt;
+
+						if ( human.isSpawned && poseControl )
+						{
+							angle += angularVelocity * dt;
+							human.drivePelvis( ctx, {
+								position: {
+									x: 4.0 * Math.sin( 0.5 * time ),
+									y: 0.5 * ( Math.cos( time + Math.PI ) + 1.0 ) + 0.1,
+									z: 0.0,
+								},
+								rotation: axisAngleToQuaternion( { x: 0, y: 1, z: 0 }, angle ),
+							}, dt > 0 ? dt : 1.0 / 60.0 );
+						}
+					},
+
+					buildUI( panel )
+					{
+						panel.add( "Motorized", motorized ? 1 : 0, { min: 0, max: 1, step: 1 }, ( value ) =>
+						{
+							motorized = value >= 0.5;
+							syncPoseState();
+						} );
+						panel.add( "Motor Hertz", motorHertz, { min: 0.01, max: 20, step: 0.05 }, ( value ) =>
+						{
+							motorHertz = value;
+							syncPoseState();
+						} );
+						panel.add( "Pose", poseControl ? 1 : 0, { min: 0, max: 1, step: 1 }, ( value ) =>
+						{
+							poseControl = value >= 0.5;
+							syncPoseState();
+						} );
+						panel.add( "Pose Hertz", poseHertz, { min: 0.01, max: 8, step: 0.05 }, ( value ) =>
+						{
+							poseHertz = value;
+							syncPoseState();
+						} );
+						panel.add( "Omega", angularVelocity, { min: 0, max: 8, step: 0.1 }, ( value ) =>
+						{
+							angularVelocity = value;
+						} );
+						panel.addButton( "Respawn", spawn );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`motors: ${motorized ? "on" : "off"}`,
+							`pose control: ${poseControl ? "on" : "off"}`,
+							`omega: ${angularVelocity.toFixed( 1 )}`,
+							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
+						];
+					},
+
+					dispose()
+					{
+						human.destroy( ctx );
 					},
 				};
 			},

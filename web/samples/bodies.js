@@ -362,6 +362,77 @@ export function createBodySamples( { BodyType } )
 			},
 		},
 		{
+			key: "bodies-gyroscopic-precession",
+			label: "Bodies / Gyroscopic Precession",
+			description:
+				"A browser port of the disabled native top-precession experiment. A tilted spinning top is initialized with high angular speed so we can inspect precession behavior, fast-rotation support, and contact stability in the wasm build.",
+			create( ctx )
+			{
+				let bodyHandle = 0;
+
+				function createTopPoints()
+				{
+					const points = [];
+					const segmentCount = 7;
+					const radius = 2.0;
+					const height = 2.0;
+					for ( let index = 0; index < segmentCount; index += 1 )
+					{
+						const angle = 2 * Math.PI * index / segmentCount;
+						points.push( {
+							x: radius * Math.cos( angle ),
+							y: height,
+							z: radius * Math.sin( angle ),
+						} );
+					}
+					points.push( { x: 0, y: 0, z: 0 } );
+					return points;
+				}
+
+				return {
+					reset()
+					{
+						const tiltRotation = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 15 * DEG_TO_RAD );
+						const spinAxis = { x: 0, y: 75, z: 0 };
+						const sinHalf = Math.sin( 15 * DEG_TO_RAD * 0.5 );
+						const cosHalf = Math.cos( 15 * DEG_TO_RAD * 0.5 );
+						const angularVelocity = {
+							x: cosHalf * spinAxis.x - sinHalf * spinAxis.y,
+							y: sinHalf * spinAxis.x + cosHalf * spinAxis.y,
+							z: spinAxis.z,
+						};
+
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 30, hy: 0.5, hz: 30 } } );
+
+						bodyHandle = ctx.physics.createHullBody( {
+							type: BodyType.dynamic,
+							position: { x: 0, y: 0.02, z: 0 },
+							rotation: tiltRotation,
+							points: createTopPoints(),
+							gravityScale: 0,
+							allowFastRotation: true,
+							angularVelocity,
+							color: 0xc67a49,
+						} );
+
+						ctx.setCameraLookAt( { x: 0, y: 22, z: 50 }, { x: 0, y: 1.5, z: 0 } );
+					},
+
+					getStatusLines()
+					{
+						const transform = bodyHandle === 0 ? null : ctx.physics.getBodyTransform( bodyHandle );
+						const omega = bodyHandle === 0 ? null : ctx.physics.getBodyAngularVelocity( bodyHandle );
+						return [
+							"expected: the tilted top should precess instead of only spinning in place",
+							transform == null ? "tilt: n/a" : `tip height: ${transform.position.y.toFixed( 2 )}`,
+							omega == null ? "angular speed: n/a" : `angular speed: ${Math.hypot( omega.x, omega.y, omega.z ).toFixed( 2 )}`,
+						];
+					},
+				};
+			},
+		},
+		{
 			key: "bodies-weeble",
 			label: "Bodies / Weeble",
 			description:

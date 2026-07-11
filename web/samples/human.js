@@ -50,6 +50,7 @@ export class Human
 		this.filterJointHandles = [];
 		this.frictionTorque = 0;
 		this.isSpawned = false;
+		this.motorsEnabled = true;
 	}
 
 	spawn( ctx, position, frictionTorque, hertz, dampingRatio, groupIndex, colorize )
@@ -358,6 +359,39 @@ export class Human
 		this.filterJointHandles.push( filterJointHandle );
 
 		this.isSpawned = true;
+		this.motorsEnabled = true;
+	}
+
+	destroy( ctx )
+	{
+		if ( this.isSpawned === false )
+		{
+			return;
+		}
+
+		for ( const bone of this.bones )
+		{
+			if ( bone.bodyHandle !== 0 )
+			{
+				ctx.physics.destroyBody( bone.bodyHandle );
+				bone.bodyHandle = 0;
+			}
+
+			if ( bone.jointHandle !== 0 )
+			{
+				ctx.box3d.api.destroyJoint( bone.jointHandle );
+				bone.jointHandle = 0;
+			}
+		}
+
+		for ( const filterHandle of this.filterJointHandles )
+		{
+			ctx.box3d.api.destroyJoint( filterHandle );
+		}
+
+		this.filterJointHandles = [];
+		this.isSpawned = false;
+		this.motorsEnabled = false;
 	}
 
 	setVelocity( ctx, velocity )
@@ -419,5 +453,47 @@ export class Human
 				ctx.box3d.api.setSphericalJointSpringDampingRatio( bone.jointHandle, dampingRatio );
 			}
 		}
+	}
+
+	setMotorsEnabled( ctx, enabled )
+	{
+		this.motorsEnabled = enabled;
+
+		for ( let i = 1; i < BoneId.count; i += 1 )
+		{
+			const bone = this.bones[i];
+			if ( bone.jointHandle === 0 )
+			{
+				continue;
+			}
+
+			if ( bone.jointType === "revolute" )
+			{
+				ctx.box3d.api.enableRevoluteJointMotor( bone.jointHandle, enabled );
+				if ( enabled )
+				{
+					ctx.box3d.api.setRevoluteJointTargetAngle( bone.jointHandle, 0 );
+				}
+			}
+			else if ( bone.jointType === "spherical" )
+			{
+				ctx.box3d.api.enableSphericalJointMotor( bone.jointHandle, enabled );
+				if ( enabled )
+				{
+					ctx.box3d.api.setSphericalJointTargetRotation( bone.jointHandle, { x: 0, y: 0, z: 0, w: 1 } );
+				}
+			}
+		}
+	}
+
+	drivePelvis( ctx, transform, timeStep )
+	{
+		const pelvisHandle = this.bones[BoneId.pelvis].bodyHandle;
+		if ( pelvisHandle === 0 )
+		{
+			return;
+		}
+
+		ctx.physics.setBodyTargetTransform( pelvisHandle, transform, timeStep, true );
 	}
 }

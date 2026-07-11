@@ -2,6 +2,31 @@ import { DEG_TO_RAD, axisAngleToQuaternion } from "./helpers.js";
 
 export function createShapeSamples( { BodyType } )
 {
+	const WIND_MAX_COUNT = 60;
+
+	function lerpVec3( a, b, t )
+	{
+		return {
+			x: a.x + ( b.x - a.x ) * t,
+			y: a.y + ( b.y - a.y ) * t,
+			z: a.z + ( b.z - a.z ) * t,
+		};
+	}
+
+	function randomRange( min, max )
+	{
+		return min + Math.random() * ( max - min );
+	}
+
+	function randomVec3( min, max )
+	{
+		return {
+			x: randomRange( min.x, max.x ),
+			y: randomRange( min.y, max.y ),
+			z: randomRange( min.z, max.z ),
+		};
+	}
+
 	return [
 		{
 			key: "inclined-plane",
@@ -519,6 +544,386 @@ export function createShapeSamples( { BodyType } )
 							trackedVelocity == null
 								? "tracked cylinder speed: n/a"
 								: `tracked cylinder speed: ${Math.hypot( trackedVelocity.x, trackedVelocity.y, trackedVelocity.z ).toFixed( 2 )}`,
+							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "wind",
+			label: "Shapes / Wind",
+			description:
+				"A browser port of the native suspended wind chain. It keeps the same sphere, capsule, and box variants, with aerodynamic forces applied per frame through the wasm bridge.",
+			create( ctx )
+			{
+				const shapeTypes = [ "sphere", "capsule", "box" ];
+				let shapeType = "box";
+				let wind = { x: 6, y: 0, z: 0 };
+				let drag = 1;
+				let lift = 0.75;
+				let count = 10;
+				let noise = { x: 0, y: 0, z: 0 };
+				let chainGroundHandle = 0;
+				const bodyHandles = [];
+
+				function clearChain()
+				{
+					for ( const bodyHandle of bodyHandles )
+					{
+						ctx.physics.destroyBody( bodyHandle );
+					}
+					bodyHandles.length = 0;
+
+					if ( chainGroundHandle !== 0 )
+					{
+						ctx.physics.destroyBody( chainGroundHandle );
+						chainGroundHandle = 0;
+					}
+				}
+
+				function buildChain()
+				{
+					clearChain();
+
+					const radius = 0.1;
+					const verticalOffset = 2;
+					chainGroundHandle = ctx.physics.createBody( {
+						type: BodyType.static,
+						position: { x: 0, y: 0, z: 0 },
+					} );
+
+					let previousBodyHandle = chainGroundHandle;
+					let previousAnchorPosition = { x: 0, y: verticalOffset, z: 0 };
+					for ( let index = 0; index < count; index += 1 )
+					{
+						const bodyHandle = ctx.physics.createBody( {
+							type: BodyType.dynamic,
+							position: { x: ( 2 * index + 1 ) * radius, y: verticalOffset, z: 0 },
+							gravityScale: 0.5,
+							enableSleep: false,
+						} );
+
+						if ( shapeType === "sphere" )
+						{
+							ctx.physics.addSphereShape( bodyHandle, {
+								center: { x: 0, y: 0, z: 0 },
+								radius,
+								density: 20,
+								color: 0xd07b45,
+							} );
+						}
+						else if ( shapeType === "capsule" )
+						{
+							ctx.physics.addCapsuleShape( bodyHandle, {
+								capsule: {
+									center1: { x: -radius, y: 0, z: 0 },
+									center2: { x: radius, y: 0, z: 0 },
+									radius: 0.5 * radius,
+								},
+								density: 20,
+								color: 0xd07b45,
+							} );
+						}
+						else
+						{
+							ctx.physics.addHullShape( bodyHandle, {
+								points: [
+									{ x: -1.25 * radius, y: -0.75 * radius, z: -0.125 * radius },
+									{ x: 1.25 * radius, y: -0.75 * radius, z: -0.125 * radius },
+									{ x: 1.25 * radius, y: 0.75 * radius, z: -0.125 * radius },
+									{ x: -1.25 * radius, y: 0.75 * radius, z: -0.125 * radius },
+									{ x: -1.25 * radius, y: -0.75 * radius, z: 0.125 * radius },
+									{ x: 1.25 * radius, y: -0.75 * radius, z: 0.125 * radius },
+									{ x: 1.25 * radius, y: 0.75 * radius, z: 0.125 * radius },
+									{ x: -1.25 * radius, y: 0.75 * radius, z: 0.125 * radius },
+								],
+								density: 20,
+								color: 0xd07b45,
+							} );
+						}
+
+						ctx.box3d.api.createSphericalJoint( ctx.physics.worldHandle, {
+							bodyA: previousBodyHandle,
+							bodyB: bodyHandle,
+							localFrameA: { p: previousAnchorPosition, q: { x: 0, y: 0, z: 0, w: 1 } },
+							localFrameB: { p: { x: -radius, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } },
+						} );
+						previousBodyHandle = bodyHandle;
+						previousAnchorPosition = { x: radius, y: 0, z: 0 };
+						bodyHandles.push( bodyHandle );
+					}
+				}
+
+				return {
+					reset()
+					{
+						noise = { x: 0, y: 0, z: 0 };
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 20, hy: 0.5, hz: 20 } } );
+						buildChain();
+						ctx.setCameraLookAt( { x: 5, y: 1, z: 5 }, { x: 0, y: 1, z: 0 } );
+					},
+
+					update()
+					{
+						const speed = Math.hypot( wind.x, wind.y, wind.z );
+						const direction = speed > 0.0001
+							? { x: wind.x / speed, y: wind.y / speed, z: wind.z / speed }
+							: { x: 0, y: 0, z: 0 };
+						const effectiveWind = {
+							x: speed * ( direction.x + noise.x ),
+							y: speed * ( direction.y + noise.y ),
+							z: speed * ( direction.z + noise.z ),
+						};
+
+						for ( const bodyHandle of bodyHandles )
+						{
+							ctx.physics.applyBodyWind( bodyHandle, effectiveWind, drag, lift, 10, true );
+						}
+
+						noise = lerpVec3(
+							noise,
+							randomVec3( { x: -0.3, y: -0.3, z: -0.3 }, { x: 0.3, y: 0.3, z: 0.3 } ),
+							0.05
+						);
+
+						ctx.physics.addDebugLine(
+							{ x: 0, y: 0.5, z: 0 },
+							{ x: 0.2 * effectiveWind.x, y: 0.5 + 0.2 * effectiveWind.y, z: 0.2 * effectiveWind.z },
+							0xff00ff
+						);
+					},
+
+					buildUI( panel )
+					{
+						panel.addButton( "Next Shape", () =>
+						{
+							shapeType = shapeTypes[( shapeTypes.indexOf( shapeType ) + 1 ) % shapeTypes.length];
+							buildChain();
+						} );
+						panel.add( "Wind", wind.x, { min: -50, max: 50, step: 0.5 }, ( value ) =>
+						{
+							wind = { ...wind, x: value };
+						} );
+						panel.add( "Drag", drag, { min: 0, max: 1, step: 0.01 }, ( value ) =>
+						{
+							drag = value;
+						} );
+						panel.add( "Lift", lift, { min: 0, max: 4, step: 0.01 }, ( value ) =>
+						{
+							lift = value;
+						} );
+						panel.add( "Count", count, { min: 1, max: WIND_MAX_COUNT, step: 1 }, ( value ) =>
+						{
+							count = Math.round( value );
+							buildChain();
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`shape: ${shapeType}`,
+							`wind.x: ${wind.x.toFixed( 1 )}`,
+							`drag/lift: ${drag.toFixed( 2 )} / ${lift.toFixed( 2 )}`,
+							`links: ${bodyHandles.length}`,
+						];
+					},
+
+					dispose()
+					{
+						clearChain();
+					},
+				};
+			},
+		},
+		{
+			key: "wind-drop",
+			label: "Shapes / Wind Drop",
+			description:
+				"A browser port of the native aerodynamic drop sample. A thin hull falls with low gravity while wind drag and lift produce the same broad gliding behavior as the C sample.",
+			create( ctx )
+			{
+				let bodyHandle = 0;
+				let drag = 1;
+				let lift = 4;
+
+				return {
+					reset()
+					{
+						const radius = 0.1;
+						bodyHandle = 0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 15, hy: 0.5, hz: 15 } } );
+						bodyHandle = ctx.physics.createHullBody( {
+							type: BodyType.dynamic,
+							position: { x: 0, y: 10, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.25 ),
+							gravityScale: 0.5,
+							points: [
+								{ x: -4 * radius, y: -0.1 * radius, z: -4 * radius },
+								{ x: 4 * radius, y: -0.1 * radius, z: -4 * radius },
+								{ x: 4 * radius, y: 0.1 * radius, z: -4 * radius },
+								{ x: -4 * radius, y: 0.1 * radius, z: -4 * radius },
+								{ x: -4 * radius, y: -0.1 * radius, z: 4 * radius },
+								{ x: 4 * radius, y: -0.1 * radius, z: 4 * radius },
+								{ x: 4 * radius, y: 0.1 * radius, z: 4 * radius },
+								{ x: -4 * radius, y: 0.1 * radius, z: 4 * radius },
+							],
+							density: 2,
+							color: 0xce7a46,
+						} );
+						ctx.setCameraLookAt( { x: -14.1, y: 6.2, z: 14.1 }, { x: 0, y: 5, z: 0 } );
+					},
+
+					update()
+					{
+						ctx.physics.applyBodyWind( bodyHandle, { x: 0, y: 0, z: 0 }, drag, lift, 10, true );
+					},
+
+					buildUI( panel )
+					{
+						panel.add( "Drag", drag, { min: 0, max: 1, step: 0.01 }, ( value ) =>
+						{
+							drag = value;
+						} );
+						panel.add( "Lift", lift, { min: 0, max: 4, step: 0.01 }, ( value ) =>
+						{
+							lift = value;
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`drag/lift: ${drag.toFixed( 2 )} / ${lift.toFixed( 2 )}`,
+							`gravity scale: 0.50`,
+							`bodies: ${ctx.physics.getBodyCount()}`,
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "wind-flap",
+			label: "Shapes / Wind Flap",
+			description:
+				"A browser port of the native flapping-wing assembly. Two spring-driven wings are hinged to a central torso while wind is applied to the wing bodies each frame.",
+			create( ctx )
+			{
+				const a = 0.4;
+				let drag = 1;
+				let lift = 2;
+				let time = 0;
+				let wingBodyHandle1 = 0;
+				let wingBodyHandle2 = 0;
+				let jointHandle1 = 0;
+				let jointHandle2 = 0;
+
+				return {
+					reset()
+					{
+						time = 0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -0.5, z: 0 }, size: { hx: 50, hy: 0.5, hz: 50 } } );
+
+						const y = 20;
+						wingBodyHandle1 = ctx.physics.createCompoundBody( {
+							type: BodyType.dynamic,
+							position: { x: -2 * a, y, z: 0 },
+							boxes: [ {
+								size: { hx: 2 * a, hy: 0.01, hz: a },
+								localRotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.1 ),
+								density: 5,
+								color: 0xd07a45,
+							} ],
+						} );
+
+						wingBodyHandle2 = ctx.physics.createCompoundBody( {
+							type: BodyType.dynamic,
+							position: { x: 2 * a, y, z: 0 },
+							boxes: [ {
+								size: { hx: 2 * a, hy: 0.01, hz: a },
+								localRotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.1 ),
+								density: 5,
+								color: 0xd07a45,
+							} ],
+						} );
+
+						const torsoBodyHandle = ctx.physics.createCapsuleBody( {
+							type: BodyType.dynamic,
+							position: { x: 0, y, z: 0 },
+							capsule: {
+								center1: { x: 0, y: 0, z: -a },
+								center2: { x: 0, y: 0, z: a },
+								radius: 0.25 * a,
+							},
+							density: 10,
+							color: 0x78848d,
+						} );
+
+						jointHandle1 = ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: torsoBodyHandle,
+							bodyB: wingBodyHandle1,
+							localFrameA: { p: { x: 0, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } },
+							localFrameB: { p: { x: 2 * a, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } },
+							enableSpring: true,
+							hertz: 6,
+							dampingRatio: 0.5,
+							enableLimit: true,
+							lowerAngle: -30 * DEG_TO_RAD,
+							upperAngle: 30 * DEG_TO_RAD,
+						} );
+
+						jointHandle2 = ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: torsoBodyHandle,
+							bodyB: wingBodyHandle2,
+							localFrameA: { p: { x: 0, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } },
+							localFrameB: { p: { x: -2 * a, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } },
+							enableSpring: true,
+							hertz: 6,
+							dampingRatio: 0.5,
+							enableLimit: true,
+							lowerAngle: -30 * DEG_TO_RAD,
+							upperAngle: 30 * DEG_TO_RAD,
+						} );
+
+						ctx.box3d.api.createFilterJoint( ctx.physics.worldHandle, {
+							bodyA: wingBodyHandle1,
+							bodyB: wingBodyHandle2,
+						} );
+
+						ctx.setCameraLookAt( { x: -37.3, y: 16.8, z: 53.2 }, { x: 0, y: 5, z: 10 } );
+					},
+
+					update( dt )
+					{
+						ctx.physics.applyBodyWind( wingBodyHandle1, { x: 0, y: 0, z: 0 }, drag, lift, 10, false );
+						ctx.physics.applyBodyWind( wingBodyHandle2, { x: 0, y: 0, z: 0 }, drag, lift, 10, false );
+						const angle = Math.sin( 10 * time );
+						ctx.box3d.api.setRevoluteJointTargetAngle( jointHandle1, angle );
+						ctx.box3d.api.setRevoluteJointTargetAngle( jointHandle2, -angle );
+						time += dt;
+					},
+
+					buildUI( panel )
+					{
+						panel.add( "Drag", drag, { min: 0, max: 1, step: 0.01 }, ( value ) =>
+						{
+							drag = value;
+						} );
+						panel.add( "Lift", lift, { min: 0, max: 4, step: 0.01 }, ( value ) =>
+						{
+							lift = value;
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`drag/lift: ${drag.toFixed( 2 )} / ${lift.toFixed( 2 )}`,
+							`wing target: ${Math.sin( 10 * time ).toFixed( 2 )} rad`,
 							`awake bodies: ${ctx.physics.getWorldAwakeBodyCount()}`,
 						];
 					},

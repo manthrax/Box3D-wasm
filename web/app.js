@@ -18,6 +18,7 @@ import { createBenchmarkSamples } from "./samples/benchmark.js";
 import { createRagdollSamples } from "./samples/ragdoll.js";
 import { createCharacterSamples } from "./samples/character.js";
 import { createGeometrySamples } from "./samples/geometry.js";
+import { createManifoldSamples } from "./samples/manifold.js";
 
 if ( globalThis.__box3dWasmApp?.dispose instanceof Function )
 {
@@ -165,6 +166,11 @@ class PhysicsScene
 		this.worldOrigin = { x: origin.x, y: origin.y, z: origin.z };
 	}
 
+	setWorldCustomFilterCallback( callback )
+	{
+		this.box3d.api.setWorldCustomFilterCallback( this.worldHandle, callback );
+	}
+
 	setWorldContactTuning( tuning )
 	{
 		this.box3d.api.setWorldContactTuning(
@@ -230,9 +236,59 @@ class PhysicsScene
 		return this.box3d.api.worldCastShapeClosest( this.worldHandle, options );
 	}
 
+	worldOverlapShape( options )
+	{
+		return this.box3d.api.worldOverlapShape( this.worldHandle, options );
+	}
+
 	shapeDistance( options )
 	{
 		return this.box3d.api.shapeDistance( options );
+	}
+
+	collideSpheres( options )
+	{
+		return this.box3d.api.collideSpheres( options );
+	}
+
+	collideCapsuleAndSphere( options )
+	{
+		return this.box3d.api.collideCapsuleAndSphere( options );
+	}
+
+	collideHullAndSphere( options )
+	{
+		return this.box3d.api.collideHullAndSphere( options );
+	}
+
+	collideCapsules( options )
+	{
+		return this.box3d.api.collideCapsules( options );
+	}
+
+	collideHullAndCapsule( options )
+	{
+		return this.box3d.api.collideHullAndCapsule( options );
+	}
+
+	collideHulls( options )
+	{
+		return this.box3d.api.collideHulls( options );
+	}
+
+	collideSphereAndTriangle( options )
+	{
+		return this.box3d.api.collideSphereAndTriangle( options );
+	}
+
+	collideCapsuleAndTriangle( options )
+	{
+		return this.box3d.api.collideCapsuleAndTriangle( options );
+	}
+
+	collideHullAndTriangle( options )
+	{
+		return this.box3d.api.collideHullAndTriangle( options );
 	}
 
 	timeOfImpact( options )
@@ -483,9 +539,109 @@ class PhysicsScene
 			color: options.color ?? DEFAULT_STATIC_COLOR,
 			roughness: options.roughness ?? 0.7,
 			metalness: options.metalness ?? 0.04,
+			doubleSided: true,
 			castShadow: options.bodyType !== this.box3d.BodyType.static,
 			receiveShadow: true,
 		} );
+	}
+
+	importNativeWorldBodies()
+	{
+		for ( const bodyHandle of this.box3d.api.getWorldBodyHandles( this.worldHandle ) )
+		{
+			if ( this.bodyEntries.has( bodyHandle ) )
+			{
+				continue;
+			}
+
+			const bodyType = this.box3d.api.getBodyType( bodyHandle );
+			const defaultColor = bodyType === this.box3d.BodyType.static ? DEFAULT_STATIC_COLOR : DEFAULT_DYNAMIC_COLOR;
+
+			for ( const shapeHandle of this.box3d.api.getBodyShapeHandles( bodyHandle ) )
+			{
+				const shapeType = this.box3d.api.getShapeType( shapeHandle );
+				const shapeColor = this.box3d.api.getShapeColor( shapeHandle ) || defaultColor;
+
+				if ( shapeType === this.box3d.ShapeType.sphere )
+				{
+					const sphere = this.box3d.api.getShapeSphere( shapeHandle );
+					this.addEntry( bodyHandle, {
+						kind: "sphere",
+						bodyType,
+						geometrySignature: `native-sphere:${sphere.radius}`,
+						geometryFactory: () => this.createSphereGeometry( sphere.radius ),
+						localPosition: sphere.center,
+						color: shapeColor,
+						roughness: 0.66,
+						metalness: 0.05,
+						castShadow: bodyType !== this.box3d.BodyType.static,
+						receiveShadow: true,
+					} );
+				}
+				else if ( shapeType === this.box3d.ShapeType.capsule )
+				{
+					const capsule = this.box3d.api.getShapeCapsule( shapeHandle );
+					this.addEntry( bodyHandle, {
+						kind: "capsule",
+						bodyType,
+						geometrySignature: [
+							"native-capsule",
+							capsule.center1.x,
+							capsule.center1.y,
+							capsule.center1.z,
+							capsule.center2.x,
+							capsule.center2.y,
+							capsule.center2.z,
+							capsule.radius,
+						].join( ":" ),
+						geometryFactory: () => this.createCapsuleGeometry( capsule ),
+						color: shapeColor,
+						roughness: 0.66,
+						metalness: 0.05,
+						castShadow: bodyType !== this.box3d.BodyType.static,
+						receiveShadow: true,
+					} );
+				}
+				else if ( shapeType === this.box3d.ShapeType.hull )
+				{
+					const points = this.box3d.api.getShapeHullPoints( shapeHandle );
+					this.addEntry( bodyHandle, {
+						kind: "hull",
+						bodyType,
+						geometrySignature: `native-hull:${points.map( ( point ) => `${point.x},${point.y},${point.z}` ).join( ";" )}`,
+						geometryFactory: () => this.createHullGeometry( points, { x: 1, y: 1, z: 1 } ),
+						color: shapeColor,
+						roughness: 0.7,
+						metalness: 0.04,
+						doubleSided: true,
+						castShadow: bodyType !== this.box3d.BodyType.static,
+						receiveShadow: true,
+					} );
+				}
+				else if ( shapeType === this.box3d.ShapeType.mesh )
+				{
+					const mesh = this.box3d.api.getShapeMesh( shapeHandle );
+					const scale = mesh.scale ?? { x: 1, y: 1, z: 1 };
+					const scaledVertices = mesh.vertices.map( ( vertex ) => ( {
+						x: ( vertex.x ?? 0 ) * ( scale.x ?? 1 ),
+						y: ( vertex.y ?? 0 ) * ( scale.y ?? 1 ),
+						z: ( vertex.z ?? 0 ) * ( scale.z ?? 1 ),
+					} ) );
+					this.addEntry( bodyHandle, {
+						kind: "mesh",
+						bodyType,
+						geometrySignature: `native-mesh:${scaledVertices.map( ( point ) => `${point.x},${point.y},${point.z}` ).join( ";" )}:${mesh.indices.join( "," )}`,
+						geometryFactory: () => this.createCustomMeshGeometry( { vertices: scaledVertices, indices: mesh.indices } ),
+						color: shapeColor,
+						roughness: 0.8,
+						metalness: 0.02,
+						doubleSided: true,
+						castShadow: bodyType !== this.box3d.BodyType.static,
+						receiveShadow: true,
+					} );
+				}
+			}
+		}
 	}
 
 	createCompoundBody( options )
@@ -608,6 +764,7 @@ class PhysicsScene
 			color: options.color ?? DEFAULT_DYNAMIC_COLOR,
 			roughness: options.roughness ?? 0.7,
 			metalness: options.metalness ?? 0.04,
+			doubleSided: true,
 			castShadow: options.type !== this.box3d.BodyType.static,
 			receiveShadow: true,
 		} );
@@ -717,6 +874,7 @@ class PhysicsScene
 			color: options.color ?? DEFAULT_STATIC_COLOR,
 			roughness: options.roughness ?? 0.72,
 			metalness: options.metalness ?? 0.08,
+			doubleSided: true,
 			castShadow: options.bodyType !== this.box3d.BodyType.static,
 			receiveShadow: true,
 		} );
@@ -755,10 +913,8 @@ class PhysicsScene
 	{
 		const geometry = new THREE.CylinderGeometry( cylinder.radius, cylinder.radius, cylinder.height, cylinder.sides ?? 12, 1 );
 		geometry.scale( Math.abs( scale.x ?? 1 ), Math.abs( scale.y ?? 1 ), Math.abs( scale.z ?? 1 ) );
-		if ( cylinder.yOffset != null && cylinder.yOffset !== 0 )
-		{
-			geometry.translate( 0, cylinder.yOffset, 0 );
-		}
+		const yOffset = ( cylinder.yOffset ?? 0 ) + 0.5 * cylinder.height;
+		geometry.translate( 0, yOffset, 0 );
 		return geometry;
 	}
 
@@ -881,8 +1037,12 @@ class PhysicsScene
 		}
 
 		geometry.setAttribute( "position", new THREE.BufferAttribute( positions, 3 ) );
-		geometry.setIndex( indices );
+		const maxIndex = indices.reduce( ( maxValue, index ) => Math.max( maxValue, index ), 0 );
+		const indexArray = maxIndex > 65535 ? new Uint32Array( indices ) : new Uint16Array( indices );
+		geometry.setIndex( new THREE.BufferAttribute( indexArray, 1 ) );
 		geometry.computeVertexNormals();
+		geometry.computeBoundingBox();
+		geometry.computeBoundingSphere();
 		return geometry;
 	}
 
@@ -994,6 +1154,7 @@ class PhysicsScene
 			renderDefinition.color,
 			renderDefinition.roughness,
 			renderDefinition.metalness,
+			renderDefinition.doubleSided ? 1 : 0,
 			renderDefinition.castShadow ? 1 : 0,
 			renderDefinition.receiveShadow ? 1 : 0,
 		].join( "|" );
@@ -1008,6 +1169,7 @@ class PhysicsScene
 			color: 0xffffff,
 			roughness: renderDefinition.roughness,
 			metalness: renderDefinition.metalness,
+			side: renderDefinition.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
 		} );
 		const mesh = new THREE.InstancedMesh( geometry, material, 16 );
 		mesh.count = 0;
@@ -1168,6 +1330,21 @@ class PhysicsScene
 	applyBodyLinearImpulse( bodyHandle, impulse, point, wake = true )
 	{
 		this.box3d.api.applyBodyLinearImpulse( bodyHandle, impulse, point, wake );
+	}
+
+	applyBodyWind( bodyHandle, wind, drag = 1, lift = 0, maxSpeed = 10, wake = true )
+	{
+		this.box3d.api.applyBodyWind( bodyHandle, wind, drag, lift, maxSpeed, wake );
+	}
+
+	setBodyColor( bodyHandle, color )
+	{
+		const entries = this.bodyEntries.get( bodyHandle ) ?? [];
+		for ( const entry of entries )
+		{
+			entry.baseColor = color;
+			this.syncEntry( entry );
+		}
 	}
 
 	disableBody( bodyHandle )
@@ -2062,6 +2239,7 @@ function mountSamples()
 		...createRagdollSamples( box3d ),
 		...createCharacterSamples( box3d ),
 		...createGeometrySamples( box3d ),
+		...createManifoldSamples( box3d ),
 	];
 	const initialSampleKey = requestedSampleKey ?? readPersistedSample();
 	activeSampleFactory = renderSampleOptions( initialSampleKey ) ?? allSamples[0];

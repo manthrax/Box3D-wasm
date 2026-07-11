@@ -6,6 +6,23 @@ export const BodyType = Object.freeze( {
 	dynamic: 2,
 } );
 
+export const ShapeType = Object.freeze( {
+	capsule: 0,
+	compound: 1,
+	height: 2,
+	hull: 3,
+	mesh: 4,
+	sphere: 5,
+} );
+
+export const BenchmarkHelper = Object.freeze( {
+	jointGrid: 1,
+	washer: 2,
+	largeWorld: 3,
+	junkyard: 4,
+	trees100: 5,
+} );
+
 const WASM_PAGE_SIZE = 64 * 1024;
 const DEFAULT_INITIAL_MEMORY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAXIMUM_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
@@ -209,7 +226,9 @@ function getShapeOptions( options )
 		enableSensorEvents: options.enableSensorEvents ?? false,
 		enableContactEvents: options.enableContactEvents ?? false,
 		enableHitEvents: options.enableHitEvents ?? false,
+		enableCustomFiltering: options.enableCustomFiltering ?? false,
 		userMaterialId: options.userMaterialId ?? 0,
+		userData: options.userData ?? 0,
 		tangentVelocity: options.tangentVelocity ?? null,
 		invokeContactCreation: options.invokeContactCreation ?? true,
 	};
@@ -265,8 +284,81 @@ function getFilterValues( filter )
 	];
 }
 
+function getTransformValues( transform )
+{
+	const position = transform?.position ?? { x: 0, y: 0, z: 0 };
+	const rotation = transform?.rotation ?? { x: 0, y: 0, z: 0, w: 1 };
+	return [
+		position.x ?? 0,
+		position.y ?? 0,
+		position.z ?? 0,
+		rotation.x ?? 0,
+		rotation.y ?? 0,
+		rotation.z ?? 0,
+		rotation.w ?? 1,
+	];
+}
+
+function readWorldManifold( module, ptr, pointCapacity )
+{
+	const values = readNumberArray( module, ptr, 14 + 9 * pointCapacity, "double" );
+	const pointCount = Math.max( 0, Math.trunc( values[0] ?? 0 ) );
+	const points = [];
+	for ( let index = 0; index < Math.min( pointCount, pointCapacity ); index += 1 )
+	{
+		const base = 14 + 9 * index;
+		points.push( {
+			point: { x: values[base + 0], y: values[base + 1], z: values[base + 2] },
+			separation: values[base + 3],
+			pair: {
+				owner1: Math.trunc( values[base + 4] ?? 0 ),
+				index1: Math.trunc( values[base + 5] ?? 0 ),
+				owner2: Math.trunc( values[base + 6] ?? 0 ),
+				index2: Math.trunc( values[base + 7] ?? 0 ),
+			},
+			triangleIndex: Math.trunc( values[base + 8] ?? 0 ),
+		} );
+	}
+
+	return {
+		pointCount,
+		normal: { x: values[1], y: values[2], z: values[3] },
+		triangleNormal: { x: values[4], y: values[5], z: values[6] },
+		triangleIndex: Math.trunc( values[7] ?? 0 ),
+		i1: Math.trunc( values[8] ?? 0 ),
+		i2: Math.trunc( values[9] ?? 0 ),
+		i3: Math.trunc( values[10] ?? 0 ),
+		squaredDistance: values[11],
+		feature: Math.trunc( values[12] ?? 0 ),
+		triangleFlags: Math.trunc( values[13] ?? 0 ),
+		points,
+	};
+}
+
 function createVanillaApi( module )
 {
+	const customFilterCallbacks = new Map();
+	globalThis.__box3dCustomFilterDispatch = ( worldHandle, bodyHandleA, bodyHandleB, userDataA, userDataB, isSensorA, isSensorB, userMaterialIdA, userMaterialIdB ) =>
+	{
+		const callback = customFilterCallbacks.get( worldHandle );
+		if ( typeof callback !== "function" )
+		{
+			return true;
+		}
+
+		return callback( {
+			worldHandle,
+			bodyHandleA,
+			bodyHandleB,
+			userDataA,
+			userDataB,
+			isSensorA,
+			isSensorB,
+			userMaterialIdA,
+			userMaterialIdB,
+		} ) !== false;
+	};
+
 	const api = {
 		isDoublePrecision()
 		{
@@ -282,7 +374,22 @@ function createVanillaApi( module )
 
 		destroyWorld( worldHandle )
 		{
+			customFilterCallbacks.delete( worldHandle );
 			module._box3d_js_destroy_world( worldHandle );
+		},
+
+		setWorldCustomFilterCallback( worldHandle, callback )
+		{
+			if ( typeof callback === "function" )
+			{
+				customFilterCallbacks.set( worldHandle, callback );
+				module._box3d_js_set_world_custom_filter_enabled( worldHandle, 1 );
+			}
+			else
+			{
+				customFilterCallbacks.delete( worldHandle );
+				module._box3d_js_set_world_custom_filter_enabled( worldHandle, 0 );
+			}
 		},
 
 		setWorldWorkerCount( worldHandle, workerCount )
@@ -293,6 +400,190 @@ function createVanillaApi( module )
 		getWorldWorkerCount( worldHandle )
 		{
 			return module._box3d_js_get_world_worker_count( worldHandle );
+		},
+
+		createBenchmarkHelper( worldHandle, helperKind )
+		{
+			return module._box3d_js_create_benchmark_helper( worldHandle, helperKind ) !== 0;
+		},
+
+		stepBenchmarkHelper( worldHandle, helperKind, stepCount )
+		{
+			module._box3d_js_step_benchmark_helper( worldHandle, helperKind, Math.trunc( stepCount ?? 0 ) );
+		},
+
+		getWorldBodyHandles( worldHandle )
+		{
+			const count = module._box3d_js_get_world_body_count( worldHandle );
+			if ( count <= 0 )
+			{
+				return [];
+			}
+
+			const ptr = module._malloc( count * 4 );
+			try
+			{
+				const actualCount = module._box3d_js_get_world_body_handles( worldHandle, ptr, count );
+				return Array.from( readNumberArray( module, ptr, actualCount, "i32" ) );
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		getBodyType( bodyHandle )
+		{
+			return module._box3d_js_get_body_type( bodyHandle );
+		},
+
+		getBodyShapeHandles( bodyHandle )
+		{
+			const count = module._box3d_js_get_body_shape_count( bodyHandle );
+			if ( count <= 0 )
+			{
+				return [];
+			}
+
+			const ptr = module._malloc( count * 4 );
+			try
+			{
+				const actualCount = module._box3d_js_get_body_shape_handles( bodyHandle, ptr, count );
+				return Array.from( readNumberArray( module, ptr, actualCount, "i32" ) );
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		getShapeType( shapeHandle )
+		{
+			return module._box3d_js_get_shape_type( shapeHandle );
+		},
+
+		getShapeColor( shapeHandle )
+		{
+			return module._box3d_js_get_shape_color( shapeHandle ) >>> 0;
+		},
+
+		getShapeSphere( shapeHandle )
+		{
+			const ptr = module._malloc( 4 * 4 );
+			try
+			{
+				module._box3d_js_get_shape_sphere( shapeHandle, ptr );
+				const values = readNumberArray( module, ptr, 4, "float" );
+				return {
+					center: { x: values[0], y: values[1], z: values[2] },
+					radius: values[3],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		getShapeCapsule( shapeHandle )
+		{
+			const ptr = module._malloc( 7 * 4 );
+			try
+			{
+				module._box3d_js_get_shape_capsule( shapeHandle, ptr );
+				const values = readNumberArray( module, ptr, 7, "float" );
+				return {
+					center1: { x: values[0], y: values[1], z: values[2] },
+					center2: { x: values[3], y: values[4], z: values[5] },
+					radius: values[6],
+				};
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		getShapeHullPoints( shapeHandle )
+		{
+			const count = module._box3d_js_get_shape_hull_point_count( shapeHandle );
+			if ( count <= 0 )
+			{
+				return [];
+			}
+
+			const ptr = module._malloc( count * 3 * 4 );
+			try
+			{
+				const actualCount = module._box3d_js_get_shape_hull_points( shapeHandle, ptr, count );
+				const values = readNumberArray( module, ptr, actualCount * 3, "float" );
+				const points = [];
+				for ( let index = 0; index < actualCount; index += 1 )
+				{
+					points.push( {
+						x: values[3 * index + 0],
+						y: values[3 * index + 1],
+						z: values[3 * index + 2],
+					} );
+				}
+				return points;
+			}
+			finally
+			{
+				module._free( ptr );
+			}
+		},
+
+		getShapeMesh( shapeHandle )
+		{
+			const vertexCount = module._box3d_js_get_shape_mesh_vertex_count( shapeHandle );
+			const triangleCount = module._box3d_js_get_shape_mesh_triangle_count( shapeHandle );
+			const scalePtr = module._malloc( 3 * 4 );
+			const vertexPtr = vertexCount > 0 ? module._malloc( vertexCount * 3 * 4 ) : 0;
+			const trianglePtr = triangleCount > 0 ? module._malloc( triangleCount * 3 * 4 ) : 0;
+			try
+			{
+				module._box3d_js_get_shape_mesh_scale( shapeHandle, scalePtr );
+				const scaleValues = readNumberArray( module, scalePtr, 3, "float" );
+				const actualVertexCount = vertexPtr !== 0 ? module._box3d_js_get_shape_mesh_vertices( shapeHandle, vertexPtr, vertexCount ) : 0;
+				const actualTriangleCount = trianglePtr !== 0 ? module._box3d_js_get_shape_mesh_triangles( shapeHandle, trianglePtr, triangleCount ) : 0;
+				const vertexValues = actualVertexCount > 0 ? readNumberArray( module, vertexPtr, actualVertexCount * 3, "float" ) : [];
+				const triangleValues = actualTriangleCount > 0 ? readNumberArray( module, trianglePtr, actualTriangleCount * 3, "i32" ) : [];
+				const vertices = [];
+				const indices = [];
+
+				for ( let index = 0; index < actualVertexCount; index += 1 )
+				{
+					vertices.push( {
+						x: vertexValues[3 * index + 0],
+						y: vertexValues[3 * index + 1],
+						z: vertexValues[3 * index + 2],
+					} );
+				}
+
+				for ( let index = 0; index < actualTriangleCount * 3; index += 1 )
+				{
+					indices.push( triangleValues[index] );
+				}
+
+				return {
+					scale: { x: scaleValues[0], y: scaleValues[1], z: scaleValues[2] },
+					vertices,
+					indices,
+				};
+			}
+			finally
+			{
+				if ( trianglePtr !== 0 )
+				{
+					module._free( trianglePtr );
+				}
+				if ( vertexPtr !== 0 )
+				{
+					module._free( vertexPtr );
+				}
+				module._free( scalePtr );
+			}
 		},
 
 		stepWorld( worldHandle, timeStep = 1 / 60, subStepCount = 4 )
@@ -446,6 +737,251 @@ function createVanillaApi( module )
 			finally
 			{
 				module._free( ptr );
+			}
+		},
+
+		worldOverlapShape( worldHandle, options = {} )
+		{
+			const points = options.points ?? [];
+			const radius = options.radius ?? 0;
+			const filterValues = getFilterValues( options.filter );
+			return withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+				withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+					Boolean(
+						module._box3d_js_world_overlap_shape(
+							worldHandle,
+							pointsPtr,
+							points.length,
+							radius,
+							filterPtr
+						)
+					)
+				)
+			);
+		},
+
+		collideSpheres( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, options.sphereA ?? [ 0, 0, 0, 0 ], "float", ( sphereAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, options.sphereB ?? [ 0, 0, 0, 0 ], "float", ( sphereBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_spheres( sphereAPtr, transformAPtr, sphereBPtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideCapsuleAndSphere( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, options.capsuleA ?? [ 0, 0, 0, 0, 0, 0, 0 ], "float", ( capsuleAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, options.sphereB ?? [ 0, 0, 0, 0 ], "float", ( sphereBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_capsule_and_sphere( capsuleAPtr, transformAPtr, sphereBPtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideHullAndSphere( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, flattenVec3Array( options.pointsA ?? [] ), "float", ( pointsAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, options.sphereB ?? [ 0, 0, 0, 0 ], "float", ( sphereBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_hull_and_sphere( pointsAPtr, options.pointsA?.length ?? 0, transformAPtr, sphereBPtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideCapsules( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, options.capsuleA ?? [ 0, 0, 0, 0, 0, 0, 0 ], "float", ( capsuleAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, options.capsuleB ?? [ 0, 0, 0, 0, 0, 0, 0 ], "float", ( capsuleBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_capsules( capsuleAPtr, transformAPtr, capsuleBPtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideHullAndCapsule( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, flattenVec3Array( options.pointsA ?? [] ), "float", ( pointsAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, options.capsuleB ?? [ 0, 0, 0, 0, 0, 0, 0 ], "float", ( capsuleBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_hull_and_capsule( pointsAPtr, options.pointsA?.length ?? 0, transformAPtr, capsuleBPtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideHulls( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 8 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, flattenVec3Array( options.pointsA ?? [] ), "float", ( pointsAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, flattenVec3Array( options.pointsB ?? [] ), "float", ( pointsBPtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_hulls( pointsAPtr, options.pointsA?.length ?? 0, transformAPtr, pointsBPtr, options.pointsB?.length ?? 0, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideSphereAndTriangle( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, options.sphereA ?? [ 0, 0, 0, 0 ], "float", ( sphereAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, flattenVec3Array( options.triangleB ?? [] ), "float", ( trianglePtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_sphere_and_triangle( sphereAPtr, transformAPtr, trianglePtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideCapsuleAndTriangle( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 4 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, options.capsuleA ?? [ 0, 0, 0, 0, 0, 0, 0 ], "float", ( capsuleAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, flattenVec3Array( options.triangleB ?? [] ), "float", ( trianglePtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_capsule_and_triangle( capsuleAPtr, transformAPtr, trianglePtr, transformBPtr, pointCapacity, outPtr );
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
+			}
+		},
+
+		collideHullAndTriangle( options = {} )
+		{
+			const pointCapacity = Math.max( 1, Math.trunc( options.pointCapacity ?? 8 ) );
+			const outPtr = module._malloc( ( 14 + 9 * pointCapacity ) * 8 );
+			try
+			{
+				return withOptionalArray( module, flattenVec3Array( options.pointsA ?? [] ), "float", ( pointsAPtr ) =>
+					withOptionalArray( module, getTransformValues( options.transformA ), "double", ( transformAPtr ) =>
+						withOptionalArray( module, flattenVec3Array( options.triangleB ?? [] ), "float", ( trianglePtr ) =>
+							withOptionalArray( module, getTransformValues( options.transformB ), "double", ( transformBPtr ) =>
+							{
+								module._box3d_js_collide_hull_and_triangle(
+									pointsAPtr,
+									options.pointsA?.length ?? 0,
+									transformAPtr,
+									trianglePtr,
+									transformBPtr,
+									options.triangleFlags ?? 0,
+									pointCapacity,
+									outPtr
+								);
+								return readWorldManifold( module, outPtr, pointCapacity );
+							} )
+						)
+					)
+				);
+			}
+			finally
+			{
+				module._free( outPtr );
 			}
 		},
 
@@ -1029,12 +1565,14 @@ function createVanillaApi( module )
 													restitution,
 													rollingResistance,
 													shapeOptions.userMaterialId,
+													shapeOptions.userData,
 													filterPtr,
 													tangentVelocityPtr,
 													shapeOptions.isSensor ? 1 : 0,
 													shapeOptions.enableSensorEvents ? 1 : 0,
 													shapeOptions.enableContactEvents ? 1 : 0,
 													shapeOptions.enableHitEvents ? 1 : 0,
+													shapeOptions.enableCustomFiltering ? 1 : 0,
 													shapeOptions.invokeContactCreation ? 1 : 0
 												)
 										)
@@ -1105,12 +1643,14 @@ function createVanillaApi( module )
 													restitution,
 													rollingResistance,
 													shapeOptions.userMaterialId,
+													shapeOptions.userData,
 													filterPtr,
 													tangentVelocityPtr,
 													shapeOptions.isSensor ? 1 : 0,
 													shapeOptions.enableSensorEvents ? 1 : 0,
 													shapeOptions.enableContactEvents ? 1 : 0,
 													shapeOptions.enableHitEvents ? 1 : 0,
+													shapeOptions.enableCustomFiltering ? 1 : 0,
 													shapeOptions.invokeContactCreation ? 1 : 0
 												)
 										)
@@ -1195,12 +1735,14 @@ function createVanillaApi( module )
 														restitution,
 														rollingResistance,
 														shapeOptions.userMaterialId,
+														shapeOptions.userData,
 														filterPtr,
 														tangentVelocityPtr,
 														shapeOptions.isSensor ? 1 : 0,
 														shapeOptions.enableSensorEvents ? 1 : 0,
 														shapeOptions.enableContactEvents ? 1 : 0,
 														shapeOptions.enableHitEvents ? 1 : 0,
+														shapeOptions.enableCustomFiltering ? 1 : 0,
 														shapeOptions.invokeContactCreation ? 1 : 0
 													)
 											)
@@ -1282,12 +1824,14 @@ function createVanillaApi( module )
 															restitution,
 															rollingResistance,
 															shapeOptions.userMaterialId,
+															shapeOptions.userData,
 															filterPtr,
 															tangentVelocityPtr,
 															shapeOptions.isSensor ? 1 : 0,
 															shapeOptions.enableSensorEvents ? 1 : 0,
 															shapeOptions.enableContactEvents ? 1 : 0,
 															shapeOptions.enableHitEvents ? 1 : 0,
+															shapeOptions.enableCustomFiltering ? 1 : 0,
 															shapeOptions.invokeContactCreation ? 1 : 0
 														)
 												)
@@ -1371,12 +1915,14 @@ function createVanillaApi( module )
 																restitution,
 																rollingResistance,
 																shapeOptions.userMaterialId,
+																shapeOptions.userData,
 																filterPtr,
 																tangentVelocityPtr,
 																shapeOptions.isSensor ? 1 : 0,
 																shapeOptions.enableSensorEvents ? 1 : 0,
 																shapeOptions.enableContactEvents ? 1 : 0,
 																shapeOptions.enableHitEvents ? 1 : 0,
+																shapeOptions.enableCustomFiltering ? 1 : 0,
 																shapeOptions.invokeContactCreation ? 1 : 0
 															)
 													)
@@ -1388,6 +1934,38 @@ function createVanillaApi( module )
 				)
 			);
 			return configureBody( module, api, bodyHandle, options );
+		},
+
+		createHullData( options = {} )
+		{
+			const points = options.points ?? [];
+			return withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+				module._box3d_js_create_hull_data(
+					pointsPtr,
+					points.length,
+					options.maxVertexCount ?? points.length
+				)
+			);
+		},
+
+		cloneAndTransformHullData( hullHandle, options = {} )
+		{
+			const scale = options.scale ?? { x: 1, y: 1, z: 1 };
+			return withOptionalArray( module, getTransformValues( options.transform ), "double", ( transformPtr ) =>
+				withOptionalArray( module, [ scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 ], "float", ( scalePtr ) =>
+					module._box3d_js_clone_and_transform_hull_data( hullHandle, transformPtr, scalePtr )
+				)
+			);
+		},
+
+		destroyHullData( hullHandle )
+		{
+			module._box3d_js_destroy_hull_data( hullHandle );
+		},
+
+		getHullSurfaceArea( hullHandle )
+		{
+			return module._box3d_js_get_hull_surface_area( hullHandle );
 		},
 
 		createGridMesh( options = {} )
@@ -1725,12 +2303,14 @@ function createVanillaApi( module )
 											restitution,
 											rollingResistance,
 											shapeOptions.userMaterialId,
+											shapeOptions.userData,
 											filterPtr,
 											tangentVelocityPtr,
 											shapeOptions.isSensor ? 1 : 0,
 											shapeOptions.enableSensorEvents ? 1 : 0,
 											shapeOptions.enableContactEvents ? 1 : 0,
 											shapeOptions.enableHitEvents ? 1 : 0,
+											shapeOptions.enableCustomFiltering ? 1 : 0,
 											shapeOptions.invokeContactCreation ? 1 : 0
 										)
 								)
@@ -1777,12 +2357,14 @@ function createVanillaApi( module )
 								restitution,
 								rollingResistance,
 								shapeOptions.userMaterialId,
+								shapeOptions.userData,
 								filterPtr,
 								tangentVelocityPtr,
 								shapeOptions.isSensor ? 1 : 0,
 								shapeOptions.enableSensorEvents ? 1 : 0,
 								shapeOptions.enableContactEvents ? 1 : 0,
 								shapeOptions.enableHitEvents ? 1 : 0,
+								shapeOptions.enableCustomFiltering ? 1 : 0,
 								shapeOptions.invokeContactCreation ? 1 : 0
 							)
 					)
@@ -1837,12 +2419,14 @@ function createVanillaApi( module )
 									restitution,
 									rollingResistance,
 									shapeOptions.userMaterialId,
+									shapeOptions.userData,
 									filterPtr,
 									tangentVelocityPtr,
 									shapeOptions.isSensor ? 1 : 0,
 									shapeOptions.enableSensorEvents ? 1 : 0,
 									shapeOptions.enableContactEvents ? 1 : 0,
 									shapeOptions.enableHitEvents ? 1 : 0,
+									shapeOptions.enableCustomFiltering ? 1 : 0,
 									shapeOptions.invokeContactCreation ? 1 : 0
 								)
 						)
@@ -1889,6 +2473,7 @@ function createVanillaApi( module )
 										restitution,
 										rollingResistance,
 										shapeOptions.userMaterialId,
+										shapeOptions.userData,
 										filterPtr,
 										tangentVelocityPtr,
 										materialsPtr,
@@ -1897,6 +2482,7 @@ function createVanillaApi( module )
 										shapeOptions.enableSensorEvents ? 1 : 0,
 										shapeOptions.enableContactEvents ? 1 : 0,
 										shapeOptions.enableHitEvents ? 1 : 0,
+										shapeOptions.enableCustomFiltering ? 1 : 0,
 										shapeOptions.invokeContactCreation ? 1 : 0
 									)
 								)
@@ -1945,12 +2531,14 @@ function createVanillaApi( module )
 									restitution,
 									rollingResistance,
 									shapeOptions.userMaterialId,
+									shapeOptions.userData,
 									filterPtr,
 									tangentVelocityPtr,
 									shapeOptions.isSensor ? 1 : 0,
 									shapeOptions.enableSensorEvents ? 1 : 0,
 									shapeOptions.enableContactEvents ? 1 : 0,
 									shapeOptions.enableHitEvents ? 1 : 0,
+									shapeOptions.enableCustomFiltering ? 1 : 0,
 									shapeOptions.invokeContactCreation ? 1 : 0
 								)
 						)
@@ -2008,12 +2596,14 @@ function createVanillaApi( module )
 											restitution,
 											rollingResistance,
 											shapeOptions.userMaterialId,
+											shapeOptions.userData,
 											filterPtr,
 											tangentVelocityPtr,
 											shapeOptions.isSensor ? 1 : 0,
 											shapeOptions.enableSensorEvents ? 1 : 0,
 											shapeOptions.enableContactEvents ? 1 : 0,
 											shapeOptions.enableHitEvents ? 1 : 0,
+											shapeOptions.enableCustomFiltering ? 1 : 0,
 											shapeOptions.invokeContactCreation ? 1 : 0
 										)
 								)
@@ -2848,6 +3438,20 @@ function createVanillaApi( module )
 			);
 		},
 
+		applyBodyWind( bodyHandle, wind, drag = 1, lift = 0, maxSpeed = 10, wake = true )
+		{
+			module._box3d_js_apply_body_wind(
+				bodyHandle,
+				wind?.x ?? 0,
+				wind?.y ?? 0,
+				wind?.z ?? 0,
+				drag,
+				lift,
+				maxSpeed,
+				wake ? 1 : 0
+			);
+		},
+
 		setBodyGravityScale( bodyHandle, gravityScale )
 		{
 			module._box3d_js_set_body_gravity_scale( bodyHandle, gravityScale );
@@ -2938,6 +3542,8 @@ export async function loadBox3D( options = {} )
 		raw: createRawNamespace( module ),
 		api: createVanillaApi( module ),
 		BodyType,
+		ShapeType,
+		BenchmarkHelper,
 	};
 }
 

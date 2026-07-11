@@ -829,6 +829,199 @@ export function createCollisionSamples( { BodyType } )
 			},
 		},
 		{
+			key: "collision-overlap-world",
+			label: "Collision / Overlap World",
+			description:
+				"A browser port of the native overlap-world sample. Sphere, capsule, and hull proxies are tested against a mixed row of sphere, capsule, hull, torus-mesh, and wave-mesh targets so we can catch broad overlap regressions in the wasm bridge.",
+			sceneOptions: {
+				showGround: false,
+				showGrid: true,
+			},
+			create( ctx )
+			{
+				let offsetZ = 0;
+
+				function spawnTargets()
+				{
+					const torusMesh = ctx.physics.createTorusMesh( {
+						radialResolution: 10,
+						tubularResolution: 12,
+						radius: 0.65,
+						thickness: 0.35,
+					} );
+					const waveMesh = ctx.physics.createWaveMesh( {
+						xCount: 10,
+						zCount: 10,
+						cellWidth: 0.2,
+						amplitude: 0.03,
+						rowFrequency: 0.03,
+						columnFrequency: 0.09,
+					} );
+
+					for ( let row = 0; row < 3; row += 1 )
+					{
+						const y = 3 + 2 * row;
+						const type = row === 0 ? BodyType.static : row === 1 ? BodyType.kinematic : BodyType.dynamic;
+						const gravityScale = 0;
+
+						ctx.physics.createSphereBody( {
+							type,
+							position: { x: -6, y, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.5 * Math.PI ),
+							radius: 0.8,
+							gravityScale,
+							color: 0xca8359,
+						} );
+
+						ctx.physics.createCapsuleBody( {
+							type,
+							position: { x: -3, y, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.25 * Math.PI ),
+							capsule: {
+								center1: { x: -0.5, y: 0, z: 0 },
+								center2: { x: 0.5, y: 0, z: 0 },
+								radius: 0.5,
+							},
+							gravityScale,
+							color: 0xb37656,
+						} );
+
+						ctx.physics.createHullBody( {
+							type,
+							position: { x: 0, y, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.25 * Math.PI ),
+							points: makeShapePoints( "box" ),
+							gravityScale,
+							color: 0x9c6a49,
+						} );
+
+						ctx.physics.createMeshBody( {
+							type,
+							position: { x: 3, y, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.5 * Math.PI ),
+							mesh: torusMesh,
+							scale: { x: -0.5, y: 1.5, z: -1.0 },
+							gravityScale,
+							color: 0x7f8d96,
+						} );
+
+						ctx.physics.createMeshBody( {
+							type: BodyType.static,
+							position: { x: 5, y: 2 + 2 * row, z: 0 },
+							rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI ),
+							mesh: waveMesh,
+							color: 0x6f7b84,
+						} );
+					}
+				}
+
+				function overlapSpheres()
+				{
+					let hits = 0;
+					for ( let index = 0; index < 5; index += 1 )
+					{
+						const center = { x: -6 + 3 * index, y: 3, z: -5 + offsetZ };
+						const hit = ctx.physics.worldOverlapShape( {
+							points: [ center ],
+							radius: 0.3,
+						} );
+						ctx.physics.addDebugPoint( center, hit ? 0xff5b4d : 0x53d16a );
+						if ( hit )
+						{
+							hits += 1;
+						}
+					}
+					return hits;
+				}
+
+				function overlapCapsules()
+				{
+					let hits = 0;
+					for ( let index = 0; index < 5; index += 1 )
+					{
+						const offset = { x: -6 + 3 * index, y: 5, z: -5 + offsetZ };
+						const center1 = offsetPoint( { x: -0.2, y: -0.2, z: -0.2 }, offset );
+						const center2 = offsetPoint( { x: 0.2, y: 0.2, z: 0.2 }, offset );
+						const hit = ctx.physics.worldOverlapShape( {
+							points: [ center1, center2 ],
+							radius: 0.2,
+						} );
+						drawCapsule( ctx.physics, center1, center2, 0.2, hit ? 0xff5b4d : 0x53d16a );
+						if ( hit )
+						{
+							hits += 1;
+						}
+					}
+					return hits;
+				}
+
+				function overlapHulls()
+				{
+					let hits = 0;
+					const localBox = [
+						{ x: 0.3, y: 0.3, z: 0.3 }, { x: -0.3, y: 0.3, z: 0.3 }, { x: -0.3, y: -0.3, z: 0.3 }, { x: 0.3, y: -0.3, z: 0.3 },
+						{ x: 0.3, y: 0.3, z: -0.3 }, { x: -0.3, y: 0.3, z: -0.3 }, { x: -0.3, y: -0.3, z: -0.3 }, { x: 0.3, y: -0.3, z: -0.3 },
+					];
+					for ( let index = 0; index < 5; index += 1 )
+					{
+						const center = { x: -6 + 3 * index, y: 7, z: -5 + offsetZ };
+						const points = localBox.map( ( point ) => offsetPoint( point, center ) );
+						const hit = ctx.physics.worldOverlapShape( {
+							points,
+							radius: 0,
+						} );
+						drawBox( ctx.physics, points, hit ? 0xff5b4d : 0x53d16a );
+						if ( hit )
+						{
+							hits += 1;
+						}
+					}
+					return hits;
+				}
+
+				let sphereHits = 0;
+				let capsuleHits = 0;
+				let hullHits = 0;
+
+				return {
+					reset()
+					{
+						offsetZ = 0;
+						sphereHits = 0;
+						capsuleHits = 0;
+						hullHits = 0;
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						spawnTargets();
+						ctx.setCameraLookAt( { x: 14, y: 12, z: 18 }, { x: 0, y: 5, z: 0 } );
+					},
+
+					update()
+					{
+						sphereHits = overlapSpheres();
+						capsuleHits = overlapCapsules();
+						hullHits = overlapHulls();
+					},
+
+					buildUI( panel )
+					{
+						panel.add( "Offset Z", offsetZ, { min: -8, max: 8, step: 0.1 }, ( value ) =>
+						{
+							offsetZ = value;
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`hits sphere/capsule/hull: ${sphereHits}/${capsuleHits}/${hullHits}`,
+							`query z offset: ${offsetZ.toFixed( 2 )}`,
+							"green means clear, red means overlapping",
+						];
+					},
+				};
+			},
+		},
+		{
 			key: "collision-initial-overlap",
 			label: "Collision / Initial Overlap",
 			description:

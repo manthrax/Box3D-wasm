@@ -25,6 +25,9 @@ execute_process(
 
 set(BOX3D_WASM_FILES
 	hello_world.c
+	benchmark_helpers_bridge.c
+	../shared/human.c
+	../shared/utils.c
 )
 
 add_executable(box3d_wasm ${BOX3D_WASM_FILES})
@@ -62,4 +65,4 @@ add_custom_command(TARGET box3d_wasm POST_BUILD
 		$<TARGET_FILE_DIR:box3d_wasm>/demo.html
 )
 
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "wasm" FILES ${BOX3D_WASM_FILES})
+source_group(TREE "${CMAKE_SOURCE_DIR}" PREFIX "src" FILES ${BOX3D_WASM_FILES})

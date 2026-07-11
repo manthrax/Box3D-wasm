@@ -291,7 +291,7 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-mesh-tile",
 			label: "Compound / Mesh Tile",
 			description:
-				"A browser-first port of the native mesh-tile sample. The native version bakes repeated box meshes into one compound shape; here we mirror the layout with repeated attached hull tiles, which preserves the visible behavior and keeps the web path lean.",
+				"A closer browser port of the native mesh-tile sample. Each tile is now represented as a repeated box mesh child on one static compound body, which better matches the original sample's mesh-backed compound layout.",
 			create( ctx )
 			{
 				const gridCount = 2;
@@ -302,19 +302,23 @@ export function createCompoundSamples( { BodyType } )
 					{
 						const random = createRng( 0x51ced00d );
 						const a = 4;
-						const boxes = [];
+						const meshes = [];
 
 						for ( let i = 0; i < gridCount; i += 1 )
 						{
 							for ( let j = 0; j < gridCount; j += 1 )
 							{
-								boxes.push( {
-									size: { hx: a, hy: 0.5 * a, hz: a },
-									localPosition: {
-										x: ( 2 * i - gridCount ) * a,
-										y: randomRange( random, -0.5, 0.25 ) * a,
-										z: ( 2 * j - gridCount ) * a,
-									},
+								const center = {
+									x: ( 2 * i - gridCount ) * a,
+									y: randomRange( random, -0.5, 0.25 ) * a,
+									z: ( 2 * j - gridCount ) * a,
+								};
+								meshes.push( {
+									mesh: ctx.physics.createBoxMesh( {
+										center,
+										extent: { x: a, y: 0.5 * a, z: a },
+										identifyEdges: true,
+									} ),
 									color: 0x6f7f89,
 								} );
 							}
@@ -324,7 +328,7 @@ export function createCompoundSamples( { BodyType } )
 						ctx.physics.createCompoundBody( {
 							type: BodyType.static,
 							position: { x: 0, y: 0, z: 0 },
-							boxes,
+							meshes,
 						} );
 
 						ctx.physics.createSphereBody( {
@@ -341,7 +345,7 @@ export function createCompoundSamples( { BodyType } )
 					{
 						return [
 							`mesh tiles: ${tileCount}`,
-							`rendered as repeated hull instances for now`,
+							`rendered as repeated box-mesh children`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},

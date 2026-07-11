@@ -138,7 +138,7 @@ export function createStackingSamples( { BodyType } )
 			key: "cylinder",
 			label: "Stacking / Cylinder",
 			description:
-				"A single rolling cylinder from the native stacking sample. This adds real convex-hull cylinder coverage to the wasm bridge while keeping the host rendering path simple and fast.",
+				"A single cylinder from the native stacking sample. This adds real convex-hull cylinder coverage to the wasm bridge while keeping the host rendering path simple and fast.",
 			create( ctx )
 			{
 				let bodyHandle = 0;

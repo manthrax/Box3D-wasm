@@ -1,5 +1,184 @@
 import { DEG_TO_RAD, axisAngleToQuaternion } from "./helpers.js";
 
+function createPrismMeshFromLoop( points, zMin, zMax )
+{
+	function polygonArea()
+	{
+		let area = 0;
+		for ( let i = 0; i < points.length; i += 1 )
+		{
+			const j = ( i + 1 ) % points.length;
+			area += points[i].x * points[j].y - points[j].x * points[i].y;
+		}
+		return 0.5 * area;
+	}
+
+	function isConvex( prev, curr, next, orientation )
+	{
+		const cross = ( curr.x - prev.x ) * ( next.y - prev.y ) - ( curr.y - prev.y ) * ( next.x - prev.x );
+		return orientation > 0 ? cross > 1e-8 : cross < -1e-8;
+	}
+
+	function pointInTriangle( p, a, b, c )
+	{
+		const area = ( u, v, w ) => ( v.x - u.x ) * ( w.y - u.y ) - ( v.y - u.y ) * ( w.x - u.x );
+		const s1 = area( a, b, p );
+		const s2 = area( b, c, p );
+		const s3 = area( c, a, p );
+		const hasNeg = s1 < -1e-8 || s2 < -1e-8 || s3 < -1e-8;
+		const hasPos = s1 > 1e-8 || s2 > 1e-8 || s3 > 1e-8;
+		return !( hasNeg && hasPos );
+	}
+
+	function triangulatePolygon()
+	{
+		const indices = points.map( ( _point, index ) => index );
+		const triangles = [];
+		const orientation = polygonArea();
+		while ( indices.length > 2 )
+		{
+			let earFound = false;
+			for ( let i = 0; i < indices.length; i += 1 )
+			{
+				const prevIndex = indices[( i - 1 + indices.length ) % indices.length];
+				const currIndex = indices[i];
+				const nextIndex = indices[( i + 1 ) % indices.length];
+				const prev = points[prevIndex];
+				const curr = points[currIndex];
+				const next = points[nextIndex];
+				if ( !isConvex( prev, curr, next, orientation ) )
+				{
+					continue;
+				}
+
+				let containsOther = false;
+				for ( let j = 0; j < indices.length; j += 1 )
+				{
+					const testIndex = indices[j];
+					if ( testIndex === prevIndex || testIndex === currIndex || testIndex === nextIndex )
+					{
+						continue;
+					}
+					if ( pointInTriangle( points[testIndex], prev, curr, next ) )
+					{
+						containsOther = true;
+						break;
+					}
+				}
+
+				if ( containsOther )
+				{
+					continue;
+				}
+
+				triangles.push( [ prevIndex, currIndex, nextIndex ] );
+				indices.splice( i, 1 );
+				earFound = true;
+				break;
+			}
+
+			if ( !earFound )
+			{
+				break;
+			}
+		}
+
+		return triangles;
+	}
+
+	const vertices = [];
+	for ( const point of points )
+	{
+		vertices.push( { x: point.x, y: point.y, z: zMin } );
+		vertices.push( { x: point.x, y: point.y, z: zMax } );
+	}
+
+	const indices = [];
+	for ( let i = 0; i < points.length; i += 1 )
+	{
+		const j = ( i + 1 ) % points.length;
+		const aLo = 2 * i;
+		const aHi = 2 * i + 1;
+		const bLo = 2 * j;
+		const bHi = 2 * j + 1;
+		indices.push( aLo, bLo, bHi, aLo, bHi, aHi );
+	}
+
+	const capTriangles = triangulatePolygon();
+	for ( const [ r0, r1, r2 ] of capTriangles )
+	{
+		indices.push( 2 * r0 + 1, 2 * r1 + 1, 2 * r2 + 1 );
+		indices.push( 2 * r0 + 0, 2 * r2 + 0, 2 * r1 + 0 );
+	}
+
+	return { vertices, indices };
+}
+
+function createZCylinderHullPoints( radius, zMin, zMax, sides )
+{
+	const points = [];
+	for ( let index = 0; index < sides; index += 1 )
+	{
+		const angle = 2 * Math.PI * index / sides;
+		const x = radius * Math.cos( angle );
+		const y = radius * Math.sin( angle );
+		points.push( { x, y, z: zMin } );
+		points.push( { x, y, z: zMax } );
+	}
+	return points;
+}
+
+function rotateAroundZ( point, angle )
+{
+	const c = Math.cos( angle );
+	const s = Math.sin( angle );
+	return {
+		x: c * point.x - s * point.y,
+		y: s * point.x + c * point.y,
+		z: point.z,
+	};
+}
+
+function createGearToothPoints( centerRadius, zCenter, angle, halfWidth, halfHeight, toothRadius, halfDepth )
+{
+	const hx = halfWidth;
+	const baseHalf = halfHeight;
+	const tipHalf = halfHeight - toothRadius;
+	const local = [
+		{ x: -hx, y: -baseHalf, z: -halfDepth },
+		{ x: -hx, y: baseHalf, z: -halfDepth },
+		{ x: -hx, y: baseHalf, z: halfDepth },
+		{ x: -hx, y: -baseHalf, z: halfDepth },
+		{ x: hx, y: -tipHalf, z: -halfDepth },
+		{ x: hx, y: tipHalf, z: -halfDepth },
+		{ x: hx, y: tipHalf, z: halfDepth },
+		{ x: hx, y: -tipHalf, z: halfDepth },
+	];
+	const center = rotateAroundZ( { x: centerRadius, y: 0, z: 0 }, angle );
+	return local.map( ( point ) =>
+	{
+		const rotated = rotateAroundZ( point, angle );
+		return { x: center.x + rotated.x, y: center.y + rotated.y, z: zCenter + rotated.z };
+	} );
+}
+
+function createRockPoints( radius, random )
+{
+	const points = [];
+	for ( let index = 0; index < 12; index += 1 )
+	{
+		const theta = 2 * Math.PI * random();
+		const phi = Math.acos( 2 * random() - 1 );
+		const r = radius * ( 0.65 + 0.35 * random() );
+		points.push( {
+			x: r * Math.sin( phi ) * Math.cos( theta ),
+			y: r * Math.cos( phi ),
+			z: r * Math.sin( phi ) * Math.sin( theta ),
+		} );
+	}
+	return points;
+}
+
 export function createJointSamples( { BodyType } )
 {
 	return [
@@ -579,23 +758,6 @@ export function createJointSamples( { BodyType } )
 							color: 0xc77543,
 						} );
 
-						ctx.box3d.api.createParallelJoint( ctx.physics.worldHandle, {
-							bodyA: groundHandle,
-							bodyB: chassisHandle,
-							localFrameA: {
-								position: { x: 0, y: 0, z: 0 },
-								rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI ),
-							},
-							localFrameB: {
-								position: { x: 0, y: 0, z: 0 },
-								rotation: axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI ),
-							},
-							drawScale: 2,
-							collideConnected: true,
-							hertz: 0.5,
-							dampingRatio: 1,
-						} );
-
 						const wheelRotation = axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, 0.5 * Math.PI );
 						const wheelFrameA = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.5 * Math.PI );
 						const wheelFrameB = axisAngleToQuaternion( { x: 1, y: 0, z: 0 }, -0.5 * Math.PI );
@@ -666,6 +828,10 @@ export function createJointSamples( { BodyType } )
 						ctx.box3d.api.setWheelJointTargetSteeringAngle( frontRightJoint, maxSteeringAngle * steering );
 						ctx.box3d.api.setWheelJointSpinMotorSpeed( rearLeftJoint, -spinSpeed * throttle );
 						ctx.box3d.api.setWheelJointSpinMotorSpeed( rearRightJoint, -spinSpeed * throttle );
+						ctx.box3d.api.wakeJointBodies( frontLeftJoint );
+						ctx.box3d.api.wakeJointBodies( frontRightJoint );
+						ctx.box3d.api.wakeJointBodies( rearLeftJoint );
+						ctx.box3d.api.wakeJointBodies( rearRightJoint );
 
 						if ( chassisHandle !== 0 )
 						{
@@ -847,8 +1013,8 @@ export function createJointSamples( { BodyType } )
 							hertz: 2,
 							dampingRatio: 0.7,
 							enableSpring: true,
-							enableConeLimit: false,
-							enableTwistLimit: false,
+							enableConeLimit: true,
+							enableTwistLimit: true,
 							enableMotor: false,
 						} );
 
@@ -875,7 +1041,7 @@ export function createJointSamples( { BodyType } )
 					{
 						return [
 							`spherical joint: animated target rotation`,
-							`cone/twist limits omitted in first browser pass`,
+							`cone: +/-30 deg, twist: +/-35 deg`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},
@@ -1418,6 +1584,314 @@ export function createJointSamples( { BodyType } )
 							`lock preset: ${lockPresets[activePresetIndex].label}`,
 							`joint row: ${labels.join( ", " )}`,
 							`distance body x: ${tracked.position.x.toFixed( 2 )}`,
+							`bodies: ${ctx.physics.getBodyCount()}`,
+						];
+					},
+				};
+			},
+		},
+		{
+			key: "joint-gear-lift",
+			label: "Joints / Gear Lift",
+			description:
+				"A browser port of the native geared lift assembly. Two meshed gear bodies drive dual hanging chains that raise a sliding gate inside a stairwell, making this a strong end-to-end regression for compound hulls, custom meshes, revolute chains, and prismatic guidance.",
+			sceneOptions: {
+				showGround: true,
+				showGrid: false,
+			},
+			create( ctx )
+			{
+				const gearRadius = 1.0;
+				const gearHalfDepth = 0.125;
+				const gearZ = 1.5;
+				const axleRadius = 0.2;
+				const toothHalfWidth = 0.11;
+				const toothHalfHeight = 0.09;
+				const toothRadius = 0.03;
+				const linkHalfLength = 0.07;
+				const linkRadius = 0.05;
+				const linkCount = 40;
+				const doorHalfHeight = 1.5;
+				const doorHalfDepth = 1.95;
+				const gearSides = 24;
+				const axleSides = 12;
+				const rockRadius = 0.3;
+				const stairPoints = [
+					{ x: -11.3, y: -0.2167 }, { x: 9.3375, y: -0.2167 }, { x: 9.3375, y: 7.1917 }, { x: 8.8083, y: 7.1917 },
+					{ x: 8.8083, y: 0.3125 }, { x: 0.3417, y: 0.3125 }, { x: 0.3417, y: 0.8417 }, { x: -0.1875, y: 0.8417 },
+					{ x: -0.1875, y: 1.3708 }, { x: -0.7167, y: 1.3708 }, { x: -0.7167, y: 1.9 }, { x: -1.2458, y: 1.9 },
+					{ x: -1.2458, y: 2.4292 }, { x: -1.775, y: 2.4292 }, { x: -1.775, y: 2.9583 }, { x: -2.3042, y: 2.9583 },
+					{ x: -2.3042, y: 3.4875 }, { x: -2.8333, y: 3.4875 }, { x: -2.8333, y: 4.0167 }, { x: -3.3625, y: 4.0167 },
+					{ x: -3.3625, y: 4.5458 }, { x: -3.8917, y: 4.5458 }, { x: -3.8917, y: 5.075 }, { x: -4.4208, y: 5.075 },
+					{ x: -4.4208, y: 5.6042 }, { x: -4.95, y: 5.6042 }, { x: -4.95, y: 6.1333 }, { x: -5.4792, y: 6.1333 },
+					{ x: -5.4792, y: 6.6625 }, { x: -6.0083, y: 6.6625 }, { x: -6.0083, y: 7.1917 }, { x: -11.3, y: 7.1917 },
+				];
+				let driverJoint = 0;
+				let motorTorque = 30000;
+				let motorSpeed = -0.3;
+				let enableMotor = true;
+
+				function createGearBody( position, toothCenterRadius )
+				{
+					const hulls = [
+						{
+							points: createZCylinderHullPoints( gearRadius, -gearZ - gearHalfDepth, -gearZ + gearHalfDepth, gearSides ),
+							friction: 0.1,
+							color: 0x8b5a2b,
+						},
+						{
+							points: createZCylinderHullPoints( gearRadius, gearZ - gearHalfDepth, gearZ + gearHalfDepth, gearSides ),
+							friction: 0.1,
+							color: 0x8b5a2b,
+						},
+						{
+							points: createZCylinderHullPoints( axleRadius, -gearZ, gearZ, axleSides ),
+							friction: 0.1,
+							color: 0x708090,
+						},
+					];
+
+					const toothCount = 16;
+					for ( let toothIndex = 0; toothIndex < toothCount; toothIndex += 1 )
+					{
+						const angle = 2 * Math.PI * toothIndex / toothCount;
+						hulls.push( {
+							points: createGearToothPoints( toothCenterRadius, -gearZ, angle, toothHalfWidth, toothHalfHeight, toothRadius, gearHalfDepth ),
+							friction: 0.1,
+							color: 0x7f7f7f,
+						} );
+						hulls.push( {
+							points: createGearToothPoints( toothCenterRadius, gearZ, angle, toothHalfWidth, toothHalfHeight, toothRadius, gearHalfDepth ),
+							friction: 0.1,
+							color: 0x7f7f7f,
+						} );
+					}
+
+					return ctx.physics.createCompoundBody( {
+						type: BodyType.dynamic,
+						position,
+						hulls,
+					} );
+				}
+
+				function createChain( topBody, attach )
+				{
+					let previousBody = topBody;
+					let previousPivot = attach;
+					let positionY = attach.y - linkHalfLength;
+
+					for ( let index = 0; index < linkCount; index += 1 )
+					{
+						const bodyHandle = ctx.physics.createCapsuleBody( {
+							type: BodyType.dynamic,
+							position: { x: attach.x, y: positionY, z: attach.z },
+							capsule: {
+								center1: { x: 0, y: -linkHalfLength, z: 0 },
+								center2: { x: 0, y: linkHalfLength, z: 0 },
+								radius: linkRadius,
+							},
+							color: 0xb0c4de,
+						} );
+
+						const pivot = { x: attach.x, y: positionY + linkHalfLength, z: attach.z };
+						ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: previousBody,
+							bodyB: bodyHandle,
+							anchor: pivot,
+							enableMotor: true,
+							maxMotorTorque: 0.05,
+						} );
+
+						previousBody = bodyHandle;
+						previousPivot = pivot;
+						positionY -= 2 * linkHalfLength;
+					}
+
+					return { bodyHandle: previousBody, pivot: previousPivot };
+				}
+
+				function createDoor( groundHandle, doorPosition, nearLink, farLink )
+				{
+					const doorHandle = ctx.physics.createBoxBody( {
+						type: BodyType.dynamic,
+						position: doorPosition,
+						size: { hx: 0.05, hy: doorHalfHeight, hz: doorHalfDepth },
+						density: 0.5,
+						friction: 0.1,
+						color: 0x008b8b,
+					} );
+
+					for ( const linkInfo of [ nearLink, farLink ] )
+					{
+						const pivot = { x: doorPosition.x, y: doorPosition.y + doorHalfHeight, z: linkInfo.depth };
+						ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: linkInfo.bodyHandle,
+							bodyB: doorHandle,
+							anchor: pivot,
+							enableMotor: true,
+							maxMotorTorque: 50,
+						} );
+					}
+
+					const slideAxis = axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.5 * Math.PI );
+					ctx.box3d.api.createPrismaticJoint( ctx.physics.worldHandle, {
+						bodyA: groundHandle,
+						bodyB: doorHandle,
+						localFrameA: {
+							position: doorPosition,
+							rotation: slideAxis,
+						},
+						localFrameB: {
+							position: { x: 0, y: 0, z: 0 },
+							rotation: slideAxis,
+						},
+						enableMotor: true,
+						maxMotorForce: 200,
+						collideConnected: true,
+					} );
+				}
+
+				function createDebris()
+				{
+					let seed = 1337;
+					function random()
+					{
+						seed = ( Math.imul( seed, 1664525 ) + 1013904223 ) >>> 0;
+						return seed / 0x100000000;
+					}
+
+					const colors = [ 0x808080, 0xdcdcdc, 0xd3d3d3, 0x778899, 0xa9a9a9 ];
+					let x = -5;
+					for ( let i = 0; i < 12; i += 1 )
+					{
+						let y = 6.5 - 0.25 * i;
+						for ( let j = 0; j < 10; j += 1 )
+						{
+							ctx.physics.createHullBody( {
+								type: BodyType.dynamic,
+								position: { x, y, z: -1.65 + 2 * random() },
+								rotation: axisAngleToQuaternion( { x: random(), y: random(), z: random() }, 2 * Math.PI * random() ),
+								points: createRockPoints( rockRadius, random ),
+								rollingResistance: 0.3,
+								color: colors[Math.floor( random() * colors.length )],
+							} );
+							y += 0.2;
+						}
+						x += 0.3;
+					}
+				}
+
+				function setMotorState()
+				{
+					ctx.box3d.api.enableRevoluteJointMotor( driverJoint, enableMotor );
+					ctx.box3d.api.setRevoluteJointMaxMotorTorque( driverJoint, motorTorque );
+					ctx.box3d.api.setRevoluteJointMotorSpeed( driverJoint, motorSpeed );
+					ctx.box3d.api.wakeJointBodies( driverJoint );
+				}
+
+				return {
+					reset()
+					{
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.createGroundBox( { position: { x: 0, y: -1, z: 0 }, size: { hx: 20, hy: 1, hz: 20 } } );
+
+						const groundHandle = ctx.physics.createBody( { type: BodyType.static, position: { x: 0, y: 0, z: 0 } } );
+						const stairMesh = createPrismMeshFromLoop( stairPoints, -2, 2 );
+						const meshResource = ctx.physics.createCustomMesh( {
+							vertices: stairMesh.vertices,
+							indices: stairMesh.indices,
+							identifyEdges: true,
+							weldVertices: true,
+							weldTolerance: 0.001,
+						} );
+						ctx.physics.addMeshShape( groundHandle, {
+							mesh: meshResource,
+							bodyType: BodyType.static,
+							color: 0x8fbc8f,
+						} );
+						ctx.physics.addBoxShape( groundHandle, {
+							bodyType: BodyType.static,
+							size: { hx: 10.31875, hy: 3.7042, hz: 0.05 },
+							localPosition: { x: -0.98125, y: 3.4875, z: -2.05 },
+							color: 0x8fbc8f,
+						} );
+
+						const gearPosition1 = { x: -4.25, y: 9.75, z: 0 };
+						const gearPosition2 = { x: -2.25, y: 10.75, z: 0 };
+						const driverBody = createGearBody( gearPosition1, gearRadius + toothHalfHeight );
+						const followerBody = createGearBody( gearPosition2, gearRadius + toothHalfWidth );
+
+						driverJoint = ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: groundHandle,
+							bodyB: driverBody,
+							anchor: gearPosition1,
+							enableMotor: enableMotor,
+							maxMotorTorque: motorTorque,
+							motorSpeed: motorSpeed,
+						} );
+
+						ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
+							bodyA: groundHandle,
+							bodyB: followerBody,
+							localFrameA: {
+								position: gearPosition2,
+								rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, 0.25 * Math.PI ),
+							},
+							localFrameB: {
+								position: { x: 0, y: 0, z: 0 },
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
+							enableMotor: true,
+							maxMotorTorque: 0.5,
+							lowerAngle: -0.3 * Math.PI,
+							upperAngle: 0.8 * Math.PI,
+							enableLimit: true,
+						} );
+
+						const linkAttach = { x: gearPosition2.x + gearRadius + 2 * toothHalfWidth + toothRadius, y: gearPosition2.y, z: 0 };
+						const doorPosition = {
+							x: linkAttach.x,
+							y: linkAttach.y - ( 2 * linkCount * linkHalfLength + doorHalfHeight ),
+							z: 0,
+						};
+						const nearLink = createChain( followerBody, { x: linkAttach.x, y: linkAttach.y, z: -gearZ } );
+						const farLink = createChain( followerBody, { x: linkAttach.x, y: linkAttach.y, z: gearZ } );
+						createDoor(
+							groundHandle,
+							doorPosition,
+							{ bodyHandle: nearLink.bodyHandle, depth: -gearZ },
+							{ bodyHandle: farLink.bodyHandle, depth: gearZ }
+						);
+
+						createDebris();
+						ctx.setCameraLookAt( { x: 16.2, y: 10.8, z: 16.7 }, { x: -1.5, y: 4.5, z: 0 } );
+					},
+
+					buildUI( panel )
+					{
+						panel.addButton( enableMotor ? "Motor: On" : "Motor: Off", () =>
+						{
+							enableMotor = !enableMotor;
+							setMotorState();
+						} );
+						panel.add( "Max Torque", motorTorque, { min: 0, max: 100000, step: 100 }, ( value ) =>
+						{
+							motorTorque = value;
+							setMotorState();
+						} );
+						panel.add( "Speed", motorSpeed, { min: -0.3, max: 0.3, step: 0.01 }, ( value ) =>
+						{
+							motorSpeed = value;
+							setMotorState();
+						} );
+					},
+
+					getStatusLines()
+					{
+						return [
+							`motor: ${enableMotor ? "on" : "off"}`,
+							`max torque: ${motorTorque.toFixed( 0 )}`,
+							`speed: ${motorSpeed.toFixed( 2 )}`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},

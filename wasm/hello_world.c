@@ -1,4 +1,5 @@
 #include "box3d/box3d.h"
+#include "../shared/benchmarks.h"
 
 #include <float.h>
 #include <stdbool.h>
@@ -23,6 +24,7 @@ static HelloWorldState g_hello;
 #define BOX3D_JS_MAX_WORLDS 128
 #define BOX3D_JS_MAX_BODIES 8192
 #define BOX3D_JS_MAX_JOINTS 8192
+#define BOX3D_JS_MAX_SHAPES 32768
 #define BOX3D_JS_MAX_MESHES 2048
 
 typedef struct Box3DJsWorldSlot
@@ -44,6 +46,13 @@ typedef struct Box3DJsJointSlot
 	int worldHandle;
 	b3JointId jointId;
 } Box3DJsJointSlot;
+
+typedef struct Box3DJsShapeSlot
+{
+	bool active;
+	int worldHandle;
+	b3ShapeId shapeId;
+} Box3DJsShapeSlot;
 
 typedef struct Box3DJsMeshSlot
 {
@@ -70,10 +79,40 @@ typedef struct Box3DJsPlaneGatherContext
 	int count;
 } Box3DJsPlaneGatherContext;
 
+typedef struct Box3DJsOverlapContext
+{
+	bool hit;
+} Box3DJsOverlapContext;
+
+EM_JS( int, Box3DJsInvokeCustomFilter, ( int worldHandle, int bodyHandleA, int bodyHandleB, uintptr_t userDataA, uintptr_t userDataB,
+										 int isSensorA, int isSensorB, uint32_t userMaterialIdA, uint32_t userMaterialIdB ), {
+	if ( typeof globalThis.__box3dCustomFilterDispatch !== "function" )
+	{
+		return 1;
+	}
+
+	return globalThis.__box3dCustomFilterDispatch(
+		worldHandle,
+		bodyHandleA,
+		bodyHandleB,
+		Number( userDataA ),
+		Number( userDataB ),
+		isSensorA !== 0,
+		isSensorB !== 0,
+		Number( userMaterialIdA ),
+		Number( userMaterialIdB )
+	) ? 1 : 0;
+} );
+
 static Box3DJsWorldSlot g_world_slots[BOX3D_JS_MAX_WORLDS];
 static Box3DJsBodySlot g_body_slots[BOX3D_JS_MAX_BODIES];
 static Box3DJsJointSlot g_joint_slots[BOX3D_JS_MAX_JOINTS];
+static Box3DJsShapeSlot g_shape_slots[BOX3D_JS_MAX_SHAPES];
+static int g_world_benchmark_helper_kinds[BOX3D_JS_MAX_WORLDS];
 static Box3DJsMeshSlot g_mesh_slots[BOX3D_JS_MAX_MESHES];
+
+void Box3DJsBeginBenchmarkTracking( int worldHandle );
+void Box3DJsEndBenchmarkTracking( void );
 
 static float Box3DJsCastClosestCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t materialId, int triangleIndex,
 										 int childIndex, void* context )
@@ -123,6 +162,94 @@ static bool Box3DJsGatherPlaneCallback( b3ShapeId shapeId, const b3PlaneResult* 
 	}
 
 	return gatherContext->count < gatherContext->capacity;
+}
+
+static bool Box3DJsOverlapAnyCallback( b3ShapeId shapeId, void* context )
+{
+	(void)shapeId;
+	Box3DJsOverlapContext* overlapContext = (Box3DJsOverlapContext*)context;
+	if ( overlapContext != NULL )
+	{
+		overlapContext->hit = true;
+	}
+
+	return false;
+}
+
+static b3WorldTransform Box3DJsReadWorldTransform( const double* values7 )
+{
+	if ( values7 == NULL )
+	{
+		return b3WorldTransform_identity;
+	}
+
+	return (b3WorldTransform){
+		.p = { values7[0], values7[1], values7[2] },
+		.q = { { (float)values7[3], (float)values7[4], (float)values7[5] }, (float)values7[6] },
+	};
+}
+
+static void Box3DJsWriteWorldManifold( const b3LocalManifold* manifold, b3WorldTransform frame, int capacity, double* outValues )
+{
+	if ( outValues == NULL )
+	{
+		return;
+	}
+
+	int totalCount = 14 + 9 * capacity;
+	for ( int i = 0; i < totalCount; ++i )
+	{
+		outValues[i] = 0.0;
+	}
+
+	if ( manifold == NULL )
+	{
+		return;
+	}
+
+	b3Vec3 normal = b3RotateVector( frame.q, manifold->normal );
+	b3Vec3 triangleNormal = b3RotateVector( frame.q, manifold->triangleNormal );
+	outValues[0] = (double)manifold->pointCount;
+	outValues[1] = normal.x;
+	outValues[2] = normal.y;
+	outValues[3] = normal.z;
+	outValues[4] = triangleNormal.x;
+	outValues[5] = triangleNormal.y;
+	outValues[6] = triangleNormal.z;
+	outValues[7] = (double)manifold->triangleIndex;
+	outValues[8] = (double)manifold->i1;
+	outValues[9] = (double)manifold->i2;
+	outValues[10] = (double)manifold->i3;
+	outValues[11] = manifold->squaredDistance;
+	outValues[12] = (double)manifold->feature;
+	outValues[13] = (double)manifold->triangleFlags;
+
+	int pointCount = manifold->pointCount < capacity ? manifold->pointCount : capacity;
+	for ( int i = 0; i < pointCount; ++i )
+	{
+		const b3LocalManifoldPoint* point = manifold->points + i;
+		b3Pos worldPoint = b3TransformWorldPoint( frame, point->point );
+		int base = 14 + 9 * i;
+		outValues[base + 0] = worldPoint.x;
+		outValues[base + 1] = worldPoint.y;
+		outValues[base + 2] = worldPoint.z;
+		outValues[base + 3] = point->separation;
+		outValues[base + 4] = (double)point->pair.owner1;
+		outValues[base + 5] = (double)point->pair.index1;
+		outValues[base + 6] = (double)point->pair.owner2;
+		outValues[base + 7] = (double)point->pair.index2;
+		outValues[base + 8] = (double)point->triangleIndex;
+	}
+}
+
+static b3HullData* Box3DJsCreateHullFromPoints( const float* points3, int pointCount )
+{
+	if ( points3 == NULL || pointCount <= 0 )
+	{
+		return NULL;
+	}
+
+	return b3CreateHull( (const b3Vec3*)points3, pointCount, pointCount );
 }
 
 static void ResetHelloState( void )
@@ -189,6 +316,22 @@ static int AllocJointSlot( int worldHandle, b3JointId jointId )
 	return 0;
 }
 
+static int AllocShapeSlot( int worldHandle, b3ShapeId shapeId )
+{
+	for ( int i = 1; i < BOX3D_JS_MAX_SHAPES; ++i )
+	{
+		if ( g_shape_slots[i].active == false )
+		{
+			g_shape_slots[i].active = true;
+			g_shape_slots[i].worldHandle = worldHandle;
+			g_shape_slots[i].shapeId = shapeId;
+			return i;
+		}
+	}
+
+	return 0;
+}
+
 static int AllocMeshSlot( b3MeshData* meshData )
 {
 	for ( int i = 1; i < BOX3D_JS_MAX_MESHES; ++i )
@@ -212,6 +355,26 @@ static b3WorldId LookupWorld( int worldHandle )
 	}
 
 	return g_world_slots[worldHandle].worldId;
+}
+
+static int FindWorldHandle( b3WorldId worldId )
+{
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return 0;
+	}
+
+	uint32_t packedWorldId = b3StoreWorldId( worldId );
+
+	for ( int i = 1; i < BOX3D_JS_MAX_WORLDS; ++i )
+	{
+		if ( g_world_slots[i].active && b3StoreWorldId( g_world_slots[i].worldId ) == packedWorldId )
+		{
+			return i;
+		}
+	}
+
+	return 0;
 }
 
 static b3BodyId LookupBody( int bodyHandle )
@@ -242,6 +405,17 @@ static int FindBodyHandle( b3BodyId bodyId )
 	return 0;
 }
 
+int Box3DJsRegisterTrackedBody( int worldHandle, b3BodyId bodyId )
+{
+	int existingHandle = FindBodyHandle( bodyId );
+	if ( existingHandle != 0 )
+	{
+		return existingHandle;
+	}
+
+	return AllocBodySlot( worldHandle, bodyId );
+}
+
 static b3JointId LookupJoint( int jointHandle )
 {
 	if ( jointHandle <= 0 || jointHandle >= BOX3D_JS_MAX_JOINTS || g_joint_slots[jointHandle].active == false )
@@ -250,6 +424,34 @@ static b3JointId LookupJoint( int jointHandle )
 	}
 
 	return g_joint_slots[jointHandle].jointId;
+}
+
+static b3ShapeId LookupShape( int shapeHandle )
+{
+	if ( shapeHandle <= 0 || shapeHandle >= BOX3D_JS_MAX_SHAPES || g_shape_slots[shapeHandle].active == false )
+	{
+		return b3_nullShapeId;
+	}
+
+	return g_shape_slots[shapeHandle].shapeId;
+}
+
+static int FindShapeHandle( b3ShapeId shapeId )
+{
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		return 0;
+	}
+
+	for ( int i = 1; i < BOX3D_JS_MAX_SHAPES; ++i )
+	{
+		if ( g_shape_slots[i].active && B3_ID_EQUALS( g_shape_slots[i].shapeId, shapeId ) )
+		{
+			return i;
+		}
+	}
+
+	return 0;
 }
 
 static b3MeshData* LookupMesh( int meshHandle )
@@ -288,6 +490,19 @@ static void ReleaseJointsForWorld( int worldHandle )
 	}
 }
 
+static void ReleaseShapesForWorld( int worldHandle )
+{
+	for ( int i = 1; i < BOX3D_JS_MAX_SHAPES; ++i )
+	{
+		if ( g_shape_slots[i].active && g_shape_slots[i].worldHandle == worldHandle )
+		{
+			g_shape_slots[i].active = false;
+			g_shape_slots[i].worldHandle = 0;
+			g_shape_slots[i].shapeId = b3_nullShapeId;
+		}
+	}
+}
+
 static b3MotionLocks ReadMotionLocks( const int* locks6 )
 {
 	b3MotionLocks locks = { 0 };
@@ -320,21 +535,44 @@ static b3Filter ReadFilter( const int* filter3 )
 }
 
 static void ConfigureShapeDef( b3ShapeDef* shapeDef, float density, float friction, float restitution, float rollingResistance,
-							   int userMaterialId, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-							   int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+							   int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3, int isSensor,
+							   int enableSensorEvents, int enableContactEvents, int enableHitEvents, int enableCustomFiltering,
+							   int invokeContactCreation )
 {
 	shapeDef->density = density;
+	shapeDef->userData = (void*)userData;
 	shapeDef->baseMaterial.friction = friction;
 	shapeDef->baseMaterial.restitution = restitution;
 	shapeDef->baseMaterial.rollingResistance = rollingResistance;
 	shapeDef->baseMaterial.userMaterialId = (uint32_t)userMaterialId;
 	shapeDef->filter = ReadFilter( filter3 );
 	shapeDef->baseMaterial.tangentVelocity = tangentVelocity3 != NULL ? (b3Vec3){ tangentVelocity3[0], tangentVelocity3[1], tangentVelocity3[2] } : b3Vec3_zero;
+	shapeDef->enableCustomFiltering = enableCustomFiltering != 0;
 	shapeDef->isSensor = isSensor != 0;
 	shapeDef->enableSensorEvents = enableSensorEvents != 0;
 	shapeDef->enableContactEvents = enableContactEvents != 0;
 	shapeDef->enableHitEvents = enableHitEvents != 0;
 	shapeDef->invokeContactCreation = invokeContactCreation != 0;
+}
+
+static bool Box3DJsCustomFilterCallback( b3ShapeId shapeIdA, b3ShapeId shapeIdB, void* context )
+{
+	int worldHandle = (int)(intptr_t)context;
+	int bodyHandleA = FindBodyHandle( b3Shape_GetBody( shapeIdA ) );
+	int bodyHandleB = FindBodyHandle( b3Shape_GetBody( shapeIdB ) );
+	b3SurfaceMaterial materialA = b3Shape_GetSurfaceMaterial( shapeIdA );
+	b3SurfaceMaterial materialB = b3Shape_GetSurfaceMaterial( shapeIdB );
+	return Box3DJsInvokeCustomFilter(
+		worldHandle,
+		bodyHandleA,
+		bodyHandleB,
+		(uintptr_t)b3Shape_GetUserData( shapeIdA ),
+		(uintptr_t)b3Shape_GetUserData( shapeIdB ),
+		b3Shape_IsSensor( shapeIdA ) ? 1 : 0,
+		b3Shape_IsSensor( shapeIdB ) ? 1 : 0,
+		materialA.userMaterialId,
+		materialB.userMaterialId
+	) != 0;
 }
 
 static b3BodyId CreateBodyCommon( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4, const float* linearVelocity3,
@@ -474,6 +712,24 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_world( float gravityX, float gravityY, 
 	return AllocWorldSlot( worldId );
 }
 
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_custom_filter_enabled( int worldHandle, int enabled )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return;
+	}
+
+	if ( enabled != 0 )
+	{
+		b3World_SetCustomFilterCallback( worldId, Box3DJsCustomFilterCallback, (void*)(intptr_t)worldHandle );
+	}
+	else
+	{
+		b3World_SetCustomFilterCallback( worldId, NULL, NULL );
+	}
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_worker_count( int worldHandle, int workerCount )
 {
 	b3WorldId worldId = LookupWorld( worldHandle );
@@ -517,8 +773,14 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_world( int worldHandle )
 	}
 
 	b3DestroyWorld( worldId );
+	if ( g_world_benchmark_helper_kinds[worldHandle] == 5 )
+	{
+		DestroyTrees();
+	}
+	g_world_benchmark_helper_kinds[worldHandle] = 0;
 	ReleaseJointsForWorld( worldHandle );
 	ReleaseBodiesForWorld( worldHandle );
+	ReleaseShapesForWorld( worldHandle );
 	g_world_slots[worldHandle].active = false;
 	g_world_slots[worldHandle].worldId = b3_nullWorldId;
 }
@@ -532,6 +794,383 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_step_world( int worldHandle, float timeStep, 
 	}
 
 	b3World_Step( worldId, timeStep, subStepCount );
+}
+
+enum
+{
+	BOX3D_JS_BENCHMARK_HELPER_JOINT_GRID = 1,
+	BOX3D_JS_BENCHMARK_HELPER_WASHER = 2,
+	BOX3D_JS_BENCHMARK_HELPER_LARGE_WORLD = 3,
+	BOX3D_JS_BENCHMARK_HELPER_JUNKYARD = 4,
+	BOX3D_JS_BENCHMARK_HELPER_TREES_100 = 5,
+};
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_create_benchmark_helper( int worldHandle, int helperKind )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return 0;
+	}
+
+	Box3DJsBeginBenchmarkTracking( worldHandle );
+	switch ( helperKind )
+	{
+		case BOX3D_JS_BENCHMARK_HELPER_JOINT_GRID:
+			CreateJointGrid( worldId );
+			break;
+
+		case BOX3D_JS_BENCHMARK_HELPER_WASHER:
+			CreateWasher( worldId );
+			break;
+
+		case BOX3D_JS_BENCHMARK_HELPER_LARGE_WORLD:
+			CreateLargeWorld( worldId );
+			break;
+
+		case BOX3D_JS_BENCHMARK_HELPER_JUNKYARD:
+			CreateJunkyard( worldId );
+			break;
+
+		case BOX3D_JS_BENCHMARK_HELPER_TREES_100:
+			CreateTrees100( worldId );
+			break;
+
+		default:
+			Box3DJsEndBenchmarkTracking();
+			return 0;
+	}
+	Box3DJsEndBenchmarkTracking();
+	g_world_benchmark_helper_kinds[worldHandle] = helperKind;
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_step_benchmark_helper( int worldHandle, int helperKind, int stepCount )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return;
+	}
+
+	switch ( helperKind )
+	{
+		case BOX3D_JS_BENCHMARK_HELPER_LARGE_WORLD:
+			StepLargeWorld( worldId, stepCount );
+			break;
+
+		case BOX3D_JS_BENCHMARK_HELPER_JUNKYARD:
+			StepJunkyard( worldId, stepCount );
+			break;
+
+		default:
+			break;
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_world_body_count( int worldHandle )
+{
+	int count = 0;
+	for ( int i = 1; i < BOX3D_JS_MAX_BODIES; ++i )
+	{
+		if ( g_body_slots[i].active && g_body_slots[i].worldHandle == worldHandle )
+		{
+			count += 1;
+		}
+	}
+
+	return count;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_world_body_handles( int worldHandle, int* outHandles, int capacity )
+{
+	if ( outHandles == NULL || capacity <= 0 )
+	{
+		return 0;
+	}
+
+	int count = 0;
+	for ( int i = 1; i < BOX3D_JS_MAX_BODIES && count < capacity; ++i )
+	{
+		if ( g_body_slots[i].active && g_body_slots[i].worldHandle == worldHandle )
+		{
+			outHandles[count++] = i;
+		}
+	}
+
+	return count;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_body_type( int bodyHandle )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return -1;
+	}
+
+	return (int)b3Body_GetType( bodyId );
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_body_shape_count( int bodyHandle )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return 0;
+	}
+
+	return b3Body_GetShapeCount( bodyId );
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_body_shape_handles( int bodyHandle, int* outHandles, int capacity )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false || outHandles == NULL || capacity <= 0 )
+	{
+		return 0;
+	}
+
+	int shapeCount = b3Body_GetShapeCount( bodyId );
+	if ( shapeCount <= 0 )
+	{
+		return 0;
+	}
+
+	b3ShapeId* shapeIds = (b3ShapeId*)malloc( (size_t)shapeCount * sizeof( b3ShapeId ) );
+	if ( shapeIds == NULL )
+	{
+		return 0;
+	}
+
+	int copiedCount = b3Body_GetShapes( bodyId, shapeIds, shapeCount );
+	int outCount = copiedCount < capacity ? copiedCount : capacity;
+	for ( int i = 0; i < outCount; ++i )
+	{
+		int shapeHandle = FindShapeHandle( shapeIds[i] );
+		if ( shapeHandle == 0 )
+		{
+			shapeHandle = AllocShapeSlot( FindWorldHandle( b3Shape_GetWorld( shapeIds[i] ) ), shapeIds[i] );
+		}
+		outHandles[i] = shapeHandle;
+	}
+
+	free( shapeIds );
+	return outCount;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_type( int shapeHandle )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		return -1;
+	}
+
+	return (int)b3Shape_GetType( shapeId );
+}
+
+EMSCRIPTEN_KEEPALIVE uint32_t box3d_js_get_shape_color( int shapeHandle )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		return 0;
+	}
+
+	return b3Shape_GetSurfaceMaterial( shapeId ).customColor;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_get_shape_sphere( int shapeHandle, float* out4 )
+{
+	if ( out4 == NULL )
+	{
+		return;
+	}
+
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		memset( out4, 0, 4 * sizeof( float ) );
+		return;
+	}
+
+	b3Sphere sphere = b3Shape_GetSphere( shapeId );
+	out4[0] = sphere.center.x;
+	out4[1] = sphere.center.y;
+	out4[2] = sphere.center.z;
+	out4[3] = sphere.radius;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_get_shape_capsule( int shapeHandle, float* out7 )
+{
+	if ( out7 == NULL )
+	{
+		return;
+	}
+
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		memset( out7, 0, 7 * sizeof( float ) );
+		return;
+	}
+
+	b3Capsule capsule = b3Shape_GetCapsule( shapeId );
+	out7[0] = capsule.center1.x;
+	out7[1] = capsule.center1.y;
+	out7[2] = capsule.center1.z;
+	out7[3] = capsule.center2.x;
+	out7[4] = capsule.center2.y;
+	out7[5] = capsule.center2.z;
+	out7[6] = capsule.radius;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_hull_point_count( int shapeHandle )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		return 0;
+	}
+
+	const b3HullData* hull = b3Shape_GetHull( shapeId );
+	return hull != NULL ? hull->vertexCount : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_hull_points( int shapeHandle, float* outPoints3, int capacity )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || outPoints3 == NULL || capacity <= 0 )
+	{
+		return 0;
+	}
+
+	const b3HullData* hull = b3Shape_GetHull( shapeId );
+	if ( hull == NULL )
+	{
+		return 0;
+	}
+
+	const b3Vec3* points = (const b3Vec3*)( (const char*)hull + hull->pointOffset );
+	int count = hull->vertexCount < capacity ? hull->vertexCount : capacity;
+	for ( int i = 0; i < count; ++i )
+	{
+		outPoints3[3 * i + 0] = points[i].x;
+		outPoints3[3 * i + 1] = points[i].y;
+		outPoints3[3 * i + 2] = points[i].z;
+	}
+
+	return count;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_get_shape_mesh_scale( int shapeHandle, float* out3 )
+{
+	if ( out3 == NULL )
+	{
+		return;
+	}
+
+	out3[0] = 1.0f;
+	out3[1] = 1.0f;
+	out3[2] = 1.0f;
+
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || b3Shape_GetType( shapeId ) != b3_meshShape )
+	{
+		return;
+	}
+
+	b3Mesh mesh = b3Shape_GetMesh( shapeId );
+	out3[0] = mesh.scale.x;
+	out3[1] = mesh.scale.y;
+	out3[2] = mesh.scale.z;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_mesh_vertex_count( int shapeHandle )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || b3Shape_GetType( shapeId ) != b3_meshShape )
+	{
+		return 0;
+	}
+
+	b3Mesh mesh = b3Shape_GetMesh( shapeId );
+	return mesh.data != NULL ? mesh.data->vertexCount : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_mesh_vertices( int shapeHandle, float* outVertices3, int capacity )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || b3Shape_GetType( shapeId ) != b3_meshShape || outVertices3 == NULL || capacity <= 0 )
+	{
+		return 0;
+	}
+
+	b3Mesh mesh = b3Shape_GetMesh( shapeId );
+	if ( mesh.data == NULL )
+	{
+		return 0;
+	}
+
+	const b3Vec3* vertices = b3GetMeshVertices( mesh.data );
+	if ( vertices == NULL )
+	{
+		return 0;
+	}
+
+	int count = mesh.data->vertexCount < capacity ? mesh.data->vertexCount : capacity;
+	for ( int i = 0; i < count; ++i )
+	{
+		outVertices3[3 * i + 0] = vertices[i].x;
+		outVertices3[3 * i + 1] = vertices[i].y;
+		outVertices3[3 * i + 2] = vertices[i].z;
+	}
+
+	return count;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_mesh_triangle_count( int shapeHandle )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || b3Shape_GetType( shapeId ) != b3_meshShape )
+	{
+		return 0;
+	}
+
+	b3Mesh mesh = b3Shape_GetMesh( shapeId );
+	return mesh.data != NULL ? mesh.data->triangleCount : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_get_shape_mesh_triangles( int shapeHandle, int* outTriangles3, int capacity )
+{
+	b3ShapeId shapeId = LookupShape( shapeHandle );
+	if ( b3Shape_IsValid( shapeId ) == false || b3Shape_GetType( shapeId ) != b3_meshShape || outTriangles3 == NULL || capacity <= 0 )
+	{
+		return 0;
+	}
+
+	b3Mesh mesh = b3Shape_GetMesh( shapeId );
+	if ( mesh.data == NULL )
+	{
+		return 0;
+	}
+
+	const b3MeshTriangle* triangles = b3GetMeshTriangles( mesh.data );
+	if ( triangles == NULL )
+	{
+		return 0;
+	}
+
+	int count = mesh.data->triangleCount < capacity ? mesh.data->triangleCount : capacity;
+	for ( int i = 0; i < count; ++i )
+	{
+		outTriangles3[3 * i + 0] = triangles[i].index1;
+		outTriangles3[3 * i + 1] = triangles[i].index2;
+		outTriangles3[3 * i + 2] = triangles[i].index3;
+	}
+
+	return count;
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_contact_tuning( int worldHandle, float hertz, float dampingRatio, float contactSpeed )
@@ -775,6 +1414,35 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, co
 	outValues10[9] = (double)context.childIndex;
 }
 
+EMSCRIPTEN_KEEPALIVE int box3d_js_world_overlap_shape( int worldHandle, const float* points3, int pointCount, float radius, const int* filter2 )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false || points3 == NULL || pointCount <= 0 )
+	{
+		return 0;
+	}
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	if ( filter2 != NULL )
+	{
+		filter.categoryBits = (uint64_t)(uint32_t)filter2[0];
+		filter.maskBits = (uint64_t)(uint32_t)filter2[1];
+	}
+
+	b3ShapeProxy proxy = {
+		.points = (const b3Vec3*)points3,
+		.count = pointCount,
+		.radius = radius,
+	};
+
+	Box3DJsOverlapContext context = {
+		.hit = false,
+	};
+
+	b3World_OverlapShape( worldId, b3Pos_zero, &proxy, filter, Box3DJsOverlapAnyCallback, &context );
+	return context.hit ? 1 : 0;
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_shape_distance( const float* pointsA3, int pointCountA, float radiusA, const double* transformA7,
 												   const float* pointsB3, int pointCountB, float radiusB, const double* transformB7,
 												   int useRadii, double* outValues12 )
@@ -842,6 +1510,292 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_shape_distance( const float* pointsA3, int po
 	outValues12[9] = output.distance;
 	outValues12[10] = (double)output.iterations;
 	outValues12[11] = (double)output.simplexCount;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_spheres( const float* sphereA4, const double* transformA7, const float* sphereB4, const double* transformB7,
+													int pointCapacity, double* outValues )
+{
+	if ( sphereA4 == NULL || sphereB4 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3Sphere sphereA = { { sphereA4[0], sphereA4[1], sphereA4[2] }, sphereA4[3] };
+	b3Sphere sphereB = { { sphereB4[0], sphereB4[1], sphereB4[2] }, sphereB4[3] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideSpheres( &manifold, pointCapacity, &sphereA, &sphereB, b3InvMulWorldTransforms( transformA, transformB ) );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_capsule_and_sphere( const float* capsuleA7, const double* transformA7, const float* sphereB4,
+															   const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( capsuleA7 == NULL || sphereB4 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3Capsule capsuleA = { { capsuleA7[0], capsuleA7[1], capsuleA7[2] }, { capsuleA7[3], capsuleA7[4], capsuleA7[5] }, capsuleA7[6] };
+	b3Sphere sphereB = { { sphereB4[0], sphereB4[1], sphereB4[2] }, sphereB4[3] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideCapsuleAndSphere( &manifold, pointCapacity, &capsuleA, &sphereB, b3InvMulWorldTransforms( transformA, transformB ) );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_hull_and_sphere( const float* pointsA3, int pointCountA, const double* transformA7, const float* sphereB4,
+															const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( pointsA3 == NULL || pointCountA <= 0 || sphereB4 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3HullData* hullA = Box3DJsCreateHullFromPoints( pointsA3, pointCountA );
+	if ( hullA == NULL )
+	{
+		return;
+	}
+
+	b3Sphere sphereB = { { sphereB4[0], sphereB4[1], sphereB4[2] }, sphereB4[3] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3SimplexCache cache = b3_emptyDistanceCache;
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		b3DestroyHull( hullA );
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideHullAndSphere( &manifold, pointCapacity, hullA, &sphereB, b3InvMulWorldTransforms( transformA, transformB ), &cache );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+	b3DestroyHull( hullA );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_capsules( const float* capsuleA7, const double* transformA7, const float* capsuleB7, const double* transformB7,
+													 int pointCapacity, double* outValues )
+{
+	if ( capsuleA7 == NULL || capsuleB7 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3Capsule capsuleA = { { capsuleA7[0], capsuleA7[1], capsuleA7[2] }, { capsuleA7[3], capsuleA7[4], capsuleA7[5] }, capsuleA7[6] };
+	b3Capsule capsuleB = { { capsuleB7[0], capsuleB7[1], capsuleB7[2] }, { capsuleB7[3], capsuleB7[4], capsuleB7[5] }, capsuleB7[6] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideCapsules( &manifold, pointCapacity, &capsuleA, &capsuleB, b3InvMulWorldTransforms( transformA, transformB ) );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_hull_and_capsule( const float* pointsA3, int pointCountA, const double* transformA7, const float* capsuleB7,
+															 const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( pointsA3 == NULL || pointCountA <= 0 || capsuleB7 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3HullData* hullA = Box3DJsCreateHullFromPoints( pointsA3, pointCountA );
+	if ( hullA == NULL )
+	{
+		return;
+	}
+
+	b3Capsule capsuleB = { { capsuleB7[0], capsuleB7[1], capsuleB7[2] }, { capsuleB7[3], capsuleB7[4], capsuleB7[5] }, capsuleB7[6] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3SimplexCache cache = b3_emptyDistanceCache;
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		b3DestroyHull( hullA );
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideHullAndCapsule( &manifold, pointCapacity, hullA, &capsuleB, b3InvMulWorldTransforms( transformA, transformB ), &cache );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+	b3DestroyHull( hullA );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_hulls( const float* pointsA3, int pointCountA, const double* transformA7, const float* pointsB3, int pointCountB,
+												  const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( pointsA3 == NULL || pointCountA <= 0 || pointsB3 == NULL || pointCountB <= 0 || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3HullData* hullA = Box3DJsCreateHullFromPoints( pointsA3, pointCountA );
+	b3HullData* hullB = Box3DJsCreateHullFromPoints( pointsB3, pointCountB );
+	if ( hullA == NULL || hullB == NULL )
+	{
+		if ( hullA != NULL ) b3DestroyHull( hullA );
+		if ( hullB != NULL ) b3DestroyHull( hullB );
+		return;
+	}
+
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3SATCache cache = { 0 };
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		b3DestroyHull( hullA );
+		b3DestroyHull( hullB );
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideHulls( &manifold, pointCapacity, hullA, hullB, b3InvMulWorldTransforms( transformA, transformB ), &cache );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+	b3DestroyHull( hullA );
+	b3DestroyHull( hullB );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_sphere_and_triangle( const float* sphereA4, const double* transformA7, const float* triangleB9,
+																const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( sphereA4 == NULL || triangleB9 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3Sphere sphereA = { { sphereA4[0], sphereA4[1], sphereA4[2] }, sphereA4[3] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3WorldTransform xf = b3InvMulWorldTransforms( transformA, transformB );
+	b3Vec3 triangle[3] = {
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[0] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[1] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[2] ),
+	};
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideSphereAndTriangle( &manifold, pointCapacity, &sphereA, triangle );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_capsule_and_triangle( const float* capsuleA7, const double* transformA7, const float* triangleB9,
+																 const double* transformB7, int pointCapacity, double* outValues )
+{
+	if ( capsuleA7 == NULL || triangleB9 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3Capsule capsuleA = { { capsuleA7[0], capsuleA7[1], capsuleA7[2] }, { capsuleA7[3], capsuleA7[4], capsuleA7[5] }, capsuleA7[6] };
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3WorldTransform xf = b3InvMulWorldTransforms( transformA, transformB );
+	b3Vec3 triangle[3] = {
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[0] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[1] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[2] ),
+	};
+	b3SimplexCache cache = b3_emptyDistanceCache;
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideCapsuleAndTriangle( &manifold, pointCapacity, &capsuleA, triangle, &cache );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_collide_hull_and_triangle( const float* pointsA3, int pointCountA, const double* transformA7, const float* triangleB9,
+															  const double* transformB7, int triangleFlags, int pointCapacity, double* outValues )
+{
+	if ( pointsA3 == NULL || pointCountA <= 0 || triangleB9 == NULL || transformA7 == NULL || transformB7 == NULL || pointCapacity <= 0 )
+	{
+		Box3DJsWriteWorldManifold( NULL, b3WorldTransform_identity, pointCapacity > 0 ? pointCapacity : 0, outValues );
+		return;
+	}
+
+	b3HullData* hullA = Box3DJsCreateHullFromPoints( pointsA3, pointCountA );
+	if ( hullA == NULL )
+	{
+		return;
+	}
+
+	b3WorldTransform transformA = Box3DJsReadWorldTransform( transformA7 );
+	b3WorldTransform transformB = Box3DJsReadWorldTransform( transformB7 );
+	b3WorldTransform xf = b3InvMulWorldTransforms( transformA, transformB );
+	b3Vec3 triangle[3] = {
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[0] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[1] ),
+		b3TransformPoint( xf, ((const b3Vec3*)triangleB9)[2] ),
+	};
+	b3SATCache cache = { 0 };
+	b3LocalManifoldPoint* points = (b3LocalManifoldPoint*)malloc( (size_t)pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	if ( points == NULL )
+	{
+		b3DestroyHull( hullA );
+		return;
+	}
+
+	b3LocalManifold manifold = { 0 };
+	manifold.points = points;
+	b3CollideHullAndTriangle( &manifold, pointCapacity, hullA, triangle[0], triangle[1], triangle[2], triangleFlags, &cache );
+	Box3DJsWriteWorldManifold( &manifold, transformA, pointCapacity, outValues );
+	free( points );
+	b3DestroyHull( hullA );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_time_of_impact( const float* pointsA3, int pointCountA, float radiusA, const double* sweepA14,
@@ -1220,8 +2174,8 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_solve_planes( const float* targetDelta3, cons
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_box( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
 											  const float* linearVelocity3, const float* angularVelocity3, const int* locks6, int isBullet, float hx, float hy, float hz,
-											  float density, float friction, float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
-											  int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+											  float density, float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3,
+											  int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = CreateBodyCommon( worldHandle, bodyType, x, y, z, rotation4, linearVelocity3, angularVelocity3, locks6, isBullet );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -1231,7 +2185,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_box( int worldHandle, int bodyType, dou
 
 	b3BoxHull hull = b3MakeBoxHull( hx, hy, hz );
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateHullShape( bodyId, &shapeDef, &hull.base );
 
 	return AllocBodySlot( worldHandle, bodyId );
@@ -1239,8 +2193,8 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_box( int worldHandle, int bodyType, dou
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_sphere( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
 												 const float* linearVelocity3, const float* angularVelocity3, const int* locks6, int isBullet, float radius, float density,
-												 float friction, float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
-												 int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												 float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3,
+												 int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = CreateBodyCommon( worldHandle, bodyType, x, y, z, rotation4, linearVelocity3, angularVelocity3, locks6, isBullet );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -1250,7 +2204,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_sphere( int worldHandle, int bodyType, 
 
 	b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, radius };
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 
 	return AllocBodySlot( worldHandle, bodyId );
@@ -1258,8 +2212,8 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_sphere( int worldHandle, int bodyType, 
 
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_capsule( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
 												  const float* linearVelocity3, const float* angularVelocity3, const int* locks6, int isBullet, const float* capsule7,
-												  float density, float friction, float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
-												  int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												  float density, float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3,
+												  int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = CreateBodyCommon( worldHandle, bodyType, x, y, z, rotation4, linearVelocity3, angularVelocity3, locks6, isBullet );
 	if ( b3Body_IsValid( bodyId ) == false || capsule7 == NULL )
@@ -1273,7 +2227,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_capsule( int worldHandle, int bodyType,
 		capsule7[6],
 	};
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateCapsuleShape( bodyId, &shapeDef, &capsule );
 
 	return AllocBodySlot( worldHandle, bodyId );
@@ -1282,8 +2236,8 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_capsule( int worldHandle, int bodyType,
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_cylinder( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
 												   const float* linearVelocity3, const float* angularVelocity3, const int* locks6, int isBullet, float height, float radius,
 												   float yOffset, int sides, const float* scale3, float density, float friction, float restitution,
-												   float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-												   int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												   float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+												   int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = CreateBodyCommon( worldHandle, bodyType, x, y, z, rotation4, linearVelocity3, angularVelocity3, locks6, isBullet );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -1299,7 +2253,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_cylinder( int worldHandle, int bodyType
 	}
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 
 	if ( scale3 != NULL )
 	{
@@ -1317,8 +2271,8 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_cylinder( int worldHandle, int bodyType
 EMSCRIPTEN_KEEPALIVE int box3d_js_create_hull( int worldHandle, int bodyType, double x, double y, double z, const double* rotation4,
 											   const float* linearVelocity3, const float* angularVelocity3, const int* locks6, int isBullet, const float* points3,
 											   int pointCount, int maxVertexCount, const float* scale3, float density, float friction, float restitution,
-											   float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-											   int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+											   float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+											   int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = CreateBodyCommon( worldHandle, bodyType, x, y, z, rotation4, linearVelocity3, angularVelocity3, locks6, isBullet );
 	if ( b3Body_IsValid( bodyId ) == false || points3 == NULL || pointCount <= 0 )
@@ -1335,7 +2289,7 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_hull( int worldHandle, int bodyType, do
 	}
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 
 	if ( scale3 != NULL )
 	{
@@ -1350,10 +2304,61 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_hull( int worldHandle, int bodyType, do
 	return AllocBodySlot( worldHandle, bodyId );
 }
 
+EMSCRIPTEN_KEEPALIVE int box3d_js_create_hull_data( const float* points3, int pointCount, int maxVertexCount )
+{
+	if ( points3 == NULL || pointCount <= 0 )
+	{
+		return 0;
+	}
+
+	b3HullData* hull = b3CreateHull( (const b3Vec3*)points3, pointCount, maxVertexCount > 0 ? maxVertexCount : pointCount );
+	return (int)(intptr_t)hull;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_clone_and_transform_hull_data( int hullHandle, const double* transform7, const float* scale3 )
+{
+	if ( hullHandle == 0 )
+	{
+		return 0;
+	}
+
+	const b3HullData* hull = (const b3HullData*)(intptr_t)hullHandle;
+	b3Transform transform = b3Transform_identity;
+	if ( transform7 != NULL )
+	{
+		transform.p = (b3Pos){ transform7[0], transform7[1], transform7[2] };
+		transform.q = (b3Quat){ { (float)transform7[3], (float)transform7[4], (float)transform7[5] }, (float)transform7[6] };
+	}
+
+	b3Vec3 scale = scale3 != NULL ? (b3Vec3){ scale3[0], scale3[1], scale3[2] } : b3Vec3_one;
+	b3HullData* clone = b3CloneAndTransformHull( hull, transform, scale );
+	return (int)(intptr_t)clone;
+}
+
+EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_hull_data( int hullHandle )
+{
+	if ( hullHandle == 0 )
+	{
+		return;
+	}
+
+	b3DestroyHull( (b3HullData*)(intptr_t)hullHandle );
+}
+
+EMSCRIPTEN_KEEPALIVE float box3d_js_get_hull_surface_area( int hullHandle )
+{
+	if ( hullHandle == 0 )
+	{
+		return 0.0f;
+	}
+
+	return ( (const b3HullData*)(intptr_t)hullHandle )->surfaceArea;
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_box_shape( int bodyHandle, float hx, float hy, float hz, const float* localPosition3,
 												  const double* localRotation4, float density, float friction, float restitution,
-												  float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-												  int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												  float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+												  int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -1373,13 +2378,13 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_box_shape( int bodyHandle, float hx, floa
 
 	b3BoxHull hull = b3MakeTransformedBoxHull( hx, hy, hz, transform );
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateHullShape( bodyId, &shapeDef, &hull.base );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_sphere_shape( int bodyHandle, float centerX, float centerY, float centerZ, float radius, float density,
-													 float friction, float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
-													 int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+													 float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3,
+													 int isSensor, int enableSensorEvents, int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -1389,13 +2394,13 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_sphere_shape( int bodyHandle, float cente
 
 	b3Sphere sphere = { { centerX, centerY, centerZ }, radius };
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_capsule_shape( int bodyHandle, const float* capsule7, float density, float friction, float restitution,
-													  float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-													  int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+													  float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+													  int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	if ( b3Body_IsValid( bodyId ) == false || capsule7 == NULL )
@@ -1409,7 +2414,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_capsule_shape( int bodyHandle, const floa
 		capsule7[6],
 	};
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3CreateCapsuleShape( bodyId, &shapeDef, &capsule );
 }
 
@@ -1503,9 +2508,9 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_mesh( int meshHandle )
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_mesh_shape( int bodyHandle, int meshHandle, const float* scale3, float density, float friction,
-												   float restitution, float rollingResistance, int userMaterialId, const int* filter3, const float* tangentVelocity3,
+												   float restitution, float rollingResistance, int userMaterialId, intptr_t userData, const int* filter3, const float* tangentVelocity3,
 												   const double* materials8, int materialCount, int isSensor, int enableSensorEvents, int enableContactEvents,
-												   int enableHitEvents, int invokeContactCreation )
+												   int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	b3MeshData* mesh = LookupMesh( meshHandle );
@@ -1515,7 +2520,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_mesh_shape( int bodyHandle, int meshHandl
 	}
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 	b3SurfaceMaterial* materials = NULL;
 	if ( materials8 != NULL && materialCount > 0 )
 	{
@@ -2343,6 +3348,40 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_apply_body_linear_impulse( int bodyHandle, fl
 	b3Body_ApplyLinearImpulse( bodyId, (b3Vec3){ x, y, z }, (b3Pos){ pointX, pointY, pointZ }, wake != 0 );
 }
 
+EMSCRIPTEN_KEEPALIVE void box3d_js_apply_body_wind( int bodyHandle, float windX, float windY, float windZ, float drag, float lift,
+													float maxSpeed, int wake )
+{
+	b3BodyId bodyId = LookupBody( bodyHandle );
+	if ( b3Body_IsValid( bodyId ) == false )
+	{
+		return;
+	}
+
+	int shapeCount = b3Body_GetShapeCount( bodyId );
+	if ( shapeCount <= 0 )
+	{
+		return;
+	}
+
+	b3ShapeId* shapeIds = (b3ShapeId*)malloc( (size_t)shapeCount * sizeof( b3ShapeId ) );
+	if ( shapeIds == NULL )
+	{
+		return;
+	}
+
+	int copied = b3Body_GetShapes( bodyId, shapeIds, shapeCount );
+	b3Vec3 wind = { windX, windY, windZ };
+	for ( int i = 0; i < copied; ++i )
+	{
+		if ( b3Shape_IsValid( shapeIds[i] ) )
+		{
+			b3Shape_ApplyWind( shapeIds[i], wind, drag, lift, maxSpeed, wake != 0 );
+		}
+	}
+
+	free( shapeIds );
+}
+
 EMSCRIPTEN_KEEPALIVE void box3d_js_set_body_gravity_scale( int bodyHandle, float gravityScale )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
@@ -3127,9 +4166,9 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_explode_world( int worldHandle, float posX, f
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_cylinder_shape( int bodyHandle, float height, float radius, float yOffset, int sides, const float* scale3,
-                                                       float density, float friction, float restitution, float rollingResistance, int userMaterialId,
-                                                       const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-                                                       int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+													   float density, float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData,
+													   const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+													   int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	if ( b3Body_IsValid( bodyId ) == false )
@@ -3144,7 +4183,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_cylinder_shape( int bodyHandle, float hei
 	}
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 
 	if ( scale3 != NULL )
 	{
@@ -3159,9 +4198,9 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_cylinder_shape( int bodyHandle, float hei
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_add_hull_shape( int bodyHandle, const float* points3, int pointCount, int maxVertexCount, const float* scale3,
-                                                   float density, float friction, float restitution, float rollingResistance, int userMaterialId,
-                                                   const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
-                                                   int enableContactEvents, int enableHitEvents, int invokeContactCreation )
+												   float density, float friction, float restitution, float rollingResistance, int userMaterialId, intptr_t userData,
+												   const int* filter3, const float* tangentVelocity3, int isSensor, int enableSensorEvents,
+												   int enableContactEvents, int enableHitEvents, int enableCustomFiltering, int invokeContactCreation )
 {
 	b3BodyId bodyId = LookupBody( bodyHandle );
 	if ( b3Body_IsValid( bodyId ) == false || points3 == NULL || pointCount <= 0 )
@@ -3177,7 +4216,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_add_hull_shape( int bodyHandle, const float* 
 	}
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
-	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, invokeContactCreation );
+	ConfigureShapeDef( &shapeDef, density, friction, restitution, rollingResistance, userMaterialId, userData, filter3, tangentVelocity3, isSensor, enableSensorEvents, enableContactEvents, enableHitEvents, enableCustomFiltering, invokeContactCreation );
 
 	if ( scale3 != NULL )
 	{

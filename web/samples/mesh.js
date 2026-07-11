@@ -332,7 +332,7 @@ export function createMeshSamples( { BodyType } )
 			key: "mesh-grid",
 			label: "Mesh / Grid",
 			description:
-				"A browser port of the native grid-mesh scene. A dynamic test body rolls across a scaled triangle grid so we can sanity-check mesh contact, rolling resistance, and dynamic respawn behavior.",
+				"A browser port of the native grid-mesh scene. A dynamic test body is spawned on a scaled triangle grid so we can sanity-check mesh contact, rolling resistance, and dynamic respawn behavior.",
 			create( ctx )
 			{
 				const state = {
@@ -395,7 +395,7 @@ export function createMeshSamples( { BodyType } )
 			key: "mesh-big-box",
 			label: "Mesh / Big Box",
 			description:
-				"A browser port of the native big-box mesh scene. A large static box mesh acts as the floor while a configurable dynamic body tests rolling and sliding against mesh triangles.",
+				"A browser port of the native big-box mesh scene. A large static box mesh acts as the floor while a configurable dynamic body tests contact and settling against mesh triangles.",
 			create( ctx )
 			{
 				const state = {
@@ -1078,11 +1078,45 @@ export function createMeshSamples( { BodyType } )
 						{ x: -6.76476669, y: -14.0281992, z: 23.1910706 },
 					];
 
-					return rawPoints.map( ( point ) => ( {
+					const points = rawPoints.map( ( point ) => ( {
 						x: 0.01 * point.y,
 						y: 0.01 * point.z,
 						z: 0.01 * point.x,
 					} ) );
+					const bounds = points.reduce(
+						( result, point ) =>
+						{
+							result.min.x = Math.min( result.min.x, point.x );
+							result.min.y = Math.min( result.min.y, point.y );
+							result.min.z = Math.min( result.min.z, point.z );
+							result.max.x = Math.max( result.max.x, point.x );
+							result.max.y = Math.max( result.max.y, point.y );
+							result.max.z = Math.max( result.max.z, point.z );
+							return result;
+						},
+						{
+							min: { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY },
+							max: { x: Number.NEGATIVE_INFINITY, y: Number.NEGATIVE_INFINITY, z: Number.NEGATIVE_INFINITY },
+						}
+					);
+					const center = {
+						x: 0.5 * ( bounds.min.x + bounds.max.x ),
+						y: 0.5 * ( bounds.min.y + bounds.max.y ),
+						z: 0.5 * ( bounds.min.z + bounds.max.z ),
+					};
+
+					return {
+						points: points.map( ( point ) => ( {
+							x: point.x - center.x,
+							y: point.y - center.y,
+							z: point.z - center.z,
+						} ) ),
+						size: {
+							x: bounds.max.x - bounds.min.x,
+							y: bounds.max.y - bounds.min.y,
+							z: bounds.max.z - bounds.min.z,
+						},
+					};
 				}
 
 				function ensureLoaded()
@@ -1092,7 +1126,7 @@ export function createMeshSamples( { BodyType } )
 					ready = false;
 					loadError = null;
 
-					loadObjMesh( collisionMesh01Url )
+					loadObjMesh( voxelMesh01Url )
 						.then( ( objMesh ) =>
 						{
 							if ( disposed || token !== loadToken )
@@ -1102,13 +1136,36 @@ export function createMeshSamples( { BodyType } )
 
 							ctx.physics.resetWorld();
 							ctx.physics.setWorldOrigin( origin );
+							const vertices = objMesh.vertices.map( ( vertex ) => ( {
+								x: 0.01 * vertex.y,
+								y: 0.01 * vertex.z,
+								z: 0.01 * vertex.x,
+							} ) );
+							const bounds = vertices.reduce(
+								( result, vertex ) =>
+								{
+									result.min.x = Math.min( result.min.x, vertex.x );
+									result.min.y = Math.min( result.min.y, vertex.y );
+									result.min.z = Math.min( result.min.z, vertex.z );
+									result.max.x = Math.max( result.max.x, vertex.x );
+									result.max.y = Math.max( result.max.y, vertex.y );
+									result.max.z = Math.max( result.max.z, vertex.z );
+									return result;
+								},
+								{
+									min: { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY },
+									max: { x: Number.NEGATIVE_INFINITY, y: Number.NEGATIVE_INFINITY, z: Number.NEGATIVE_INFINITY },
+								}
+							);
+							const center = {
+								x: 0.5 * ( bounds.min.x + bounds.max.x ),
+								y: 0.5 * ( bounds.min.y + bounds.max.y ),
+								z: 0.5 * ( bounds.min.z + bounds.max.z ),
+							};
+							const probeHull = createProbeHull();
 
 							const mesh = ctx.physics.createCustomMesh( {
-								vertices: objMesh.vertices.map( ( vertex ) => ( {
-									x: 0.01 * vertex.x,
-									y: 0.01 * vertex.y,
-									z: 0.01 * vertex.z,
-								} ) ),
+								vertices,
 								indices: objMesh.indices,
 								materialIndices: objMesh.materialIndices,
 								identifyEdges: true,
@@ -1125,17 +1182,21 @@ export function createMeshSamples( { BodyType } )
 
 							ctx.physics.createHullBody( {
 								type: BodyType.dynamic,
-								position: { x: 5020.27734, y: 3506.22559, z: -6986.48584 },
+								position: {
+									x: origin.x + center.x,
+									y: origin.y + bounds.max.y + 0.5 * probeHull.size.y + 1.0,
+									z: origin.z + center.z,
+								},
 								rotation: { x: 0.664546967, y: 0.669287264, z: 0.135021493, w: 0.303646326 },
-								points: createProbeHull(),
+								points: probeHull.points,
 								rollingResistance: 0.1,
 								color: 0xd98848,
 							} );
 
 							ready = true;
 							ctx.setCameraLookAt(
-								{ x: origin.x - 26, y: origin.y + 12, z: origin.z + 18 },
-								{ x: origin.x, y: origin.y + 10, z: origin.z }
+								{ x: center.x - 26, y: center.y + 12, z: center.z + 18 },
+								{ x: center.x, y: center.y, z: center.z }
 							);
 						} )
 						.catch( ( error ) =>

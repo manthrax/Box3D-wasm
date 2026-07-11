@@ -1,4 +1,7 @@
-import { axisAngleToQuaternion } from "./helpers.js";
+import { DEG_TO_RAD, axisAngleToQuaternion, loadObjMesh } from "./helpers.js";
+import buildingObjUrl from "../../data/meshes/building.obj?url";
+import stairsObjUrl from "../../data/meshes/stairs.obj?url";
+import testMap01ObjUrl from "../../data/meshes/test_map01.obj?url";
 
 function createKeyboardTracker()
 {
@@ -506,6 +509,405 @@ export function createCharacterSamples( { BodyType } )
 					dispose()
 					{
 						keyboard.detach();
+					},
+				};
+			},
+		},
+		{
+			key: "character-rigid-body",
+			label: "Character / Rigid Body",
+			description: "A mesh-backed rigid-body character scene inspired by the native s&box-style sample. Use WASD or Arrow Keys to move, Space to jump, Shift to sprint, T to toggle the follow camera, and V to toggle debug lines.",
+			sceneOptions: {
+				showGround: false,
+				showGrid: false,
+			},
+			create( ctx )
+			{
+				const keyboard = createKeyboardTracker();
+				let loadToken = 0;
+				let disposed = false;
+				let loading = false;
+				let ready = false;
+				let loadError = null;
+				let thirdPerson = true;
+				let showDebug = true;
+				let characterBody = 0;
+				let lastGrounded = false;
+				let lastHorizontalSpeed = 0;
+				let lastVerticalSpeed = 0;
+				let lastGroundDistance = Infinity;
+
+				function addStaticObjMesh( objMesh, options )
+				{
+					const mesh = ctx.physics.createCustomMesh( {
+						vertices: objMesh.vertices,
+						indices: objMesh.indices,
+						materialIndices: objMesh.materialIndices,
+					} );
+					return ctx.physics.createMeshBody( {
+						type: BodyType.static,
+						position: options.position,
+						rotation: options.rotation,
+						scale: options.scale,
+						mesh,
+						color: options.color,
+					} );
+				}
+
+				async function rebuildScene()
+				{
+					const token = ++loadToken;
+					loading = true;
+					ready = false;
+					loadError = null;
+
+					try
+					{
+						const [ levelMesh, stairsMesh, buildingMesh ] = await Promise.all( [
+							loadObjMesh( testMap01ObjUrl ),
+							loadObjMesh( stairsObjUrl ),
+							loadObjMesh( buildingObjUrl ),
+						] );
+
+						if ( disposed || token !== loadToken )
+						{
+							return;
+						}
+
+						ctx.physics.resetWorld();
+						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+
+						addStaticObjMesh( levelMesh, {
+							position: { x: 0, y: 0, z: 0 },
+							rotation: { x: 0, y: 0, z: 0, w: 1 },
+							scale: { x: 1, y: 1, z: 1 },
+							color: 0x75838d,
+						} );
+
+						addStaticObjMesh( stairsMesh, {
+							position: { x: -10, y: 0, z: 0 },
+							rotation: { x: 0, y: 0, z: 0, w: 1 },
+							scale: { x: 0.75, y: 0.75, z: -1.5 },
+							color: 0x6c7b84,
+						} );
+
+						addStaticObjMesh( buildingMesh, {
+							position: { x: -5, y: 0, z: -10 },
+							rotation: { x: 0, y: 0, z: 0, w: 1 },
+							scale: { x: 1, y: 1, z: 1 },
+							color: 0x7f8a92,
+						} );
+
+						const heightField = ctx.physics.createWaveMesh( {
+							xCount: 48,
+							zCount: 48,
+							cellWidth: 1.0,
+							amplitude: 1.0,
+							rowFrequency: 0.02,
+							columnFrequency: 0.04,
+							materialCount: 3,
+							identifyEdges: true,
+						} );
+						ctx.physics.createMeshBody( {
+							type: BodyType.static,
+							position: { x: 20, y: 0, z: 0 },
+							mesh: heightField,
+							color: 0x7a878f,
+						} );
+
+						ctx.physics.createBoxBody( {
+							type: BodyType.static,
+							position: { x: 6, y: 1, z: 4 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, -20 * DEG_TO_RAD ),
+							size: { hx: 3.0, hy: 0.15, hz: 1.5 },
+							friction: 0.6,
+							color: 0x708855,
+						} );
+
+						ctx.physics.createBoxBody( {
+							type: BodyType.static,
+							position: { x: 6, y: 2, z: -4 },
+							rotation: axisAngleToQuaternion( { x: 0, y: 0, z: 1 }, -50 * DEG_TO_RAD ),
+							size: { hx: 2.5, hy: 0.15, hz: 1.5 },
+							friction: 0.6,
+							color: 0x98685a,
+						} );
+
+						for ( let index = 0; index < 3; index += 1 )
+						{
+							ctx.physics.createBoxBody( {
+								type: BodyType.static,
+								position: { x: -4 + 3.5 * index, y: 1.2, z: -5 },
+								size: { hx: 1.2, hy: 0.15, hz: 1.2 },
+								friction: 0.6,
+								color: 0x72818c,
+							} );
+						}
+
+						for ( let index = 0; index < 5; index += 1 )
+						{
+							const lipHeight = 0.05 + 0.08 * index;
+							ctx.physics.createBoxBody( {
+								type: BodyType.static,
+								position: { x: -8, y: lipHeight, z: -1 + 2 * index },
+								size: { hx: 1.0, hy: lipHeight, hz: 0.6 },
+								friction: 0.6,
+								color: 0x5c88c0,
+							} );
+						}
+
+						ctx.physics.createBoxBody( {
+							type: BodyType.static,
+							position: { x: 0, y: 1.5, z: 10 },
+							size: { hx: 4.0, hy: 1.5, hz: 0.2 },
+							friction: 0.6,
+							color: 0x506068,
+						} );
+
+						for ( let index = 0; index < 3; index += 1 )
+						{
+							ctx.physics.createBoxBody( {
+								type: BodyType.dynamic,
+								position: { x: 3 + 1.5 * index, y: 0.5, z: 0 },
+								size: { hx: 0.4, hy: 0.4, hz: 0.4 },
+								density: 1,
+								friction: 0.6,
+								color: 0xd3a14a,
+							} );
+						}
+
+						ctx.physics.createSphereBody( {
+							type: BodyType.dynamic,
+							position: { x: -3, y: 1, z: 0 },
+							radius: 0.5,
+							density: 1,
+							friction: 0.6,
+							color: 0xdc8e3e,
+						} );
+
+						characterBody = ctx.physics.createBody( {
+							type: BodyType.dynamic,
+							position: { x: 7.5, y: 2.0, z: 9.0 },
+							enableSleep: false,
+							motionLocks: {
+								angularX: true,
+								angularY: true,
+								angularZ: true,
+							},
+							linearDamping: 0.3,
+						} );
+
+						ctx.physics.addCapsuleShape( characterBody, {
+							bodyType: BodyType.dynamic,
+							capsule: {
+								center1: { x: 0, y: -0.6, z: 0 },
+								center2: { x: 0, y: 0.6, z: 0 },
+								radius: 0.3,
+							},
+							density: 10,
+							friction: 0.6,
+							color: 0x279dff,
+						} );
+
+						lastGrounded = false;
+						lastHorizontalSpeed = 0;
+						lastVerticalSpeed = 0;
+						lastGroundDistance = Infinity;
+						ready = true;
+						ctx.setCameraLookAt( { x: 11, y: 6, z: 14 }, { x: 7.5, y: 2.0, z: 9.0 } );
+					}
+					catch ( error )
+					{
+						if ( disposed || token !== loadToken )
+						{
+							return;
+						}
+
+						loadError = error instanceof Error ? error.message : String( error );
+					}
+					finally
+					{
+						if ( token === loadToken )
+						{
+							loading = false;
+						}
+					}
+				}
+
+				function updateCamera( position )
+				{
+					if ( thirdPerson )
+					{
+						ctx.setCameraLookAt(
+							{
+								x: position.x + 5.5,
+								y: position.y + 4.5,
+								z: position.z + 7.5,
+							},
+							{
+								x: position.x,
+								y: position.y + 1.0,
+								z: position.z,
+							}
+						);
+					}
+					else
+					{
+						ctx.setCameraLookAt(
+							{
+								x: position.x,
+								y: position.y + 1.8,
+								z: position.z + 0.1,
+							},
+							{
+								x: position.x,
+								y: position.y + 1.8,
+								z: position.z - 4.0,
+							}
+						);
+					}
+				}
+
+				function onKeyDown( event )
+				{
+					if ( event.repeat )
+					{
+						return;
+					}
+
+					const key = event.key.toLowerCase();
+					if ( key === "t" )
+					{
+						thirdPerson = !thirdPerson;
+					}
+					else if ( key === "v" )
+					{
+						showDebug = !showDebug;
+					}
+				}
+
+				return {
+					reset()
+					{
+						ready = false;
+						loadError = null;
+						keyboard.attach();
+						window.addEventListener( "keydown", onKeyDown );
+						void rebuildScene();
+					},
+
+					update()
+					{
+						if ( ready === false || characterBody === 0 )
+						{
+							return;
+						}
+
+						const transform = ctx.physics.getBodyTransform( characterBody );
+						const velocity = ctx.physics.getBodyLinearVelocity( characterBody );
+						const movement = getNudgeVector( keyboard.keys, 1.0 );
+						const moveLength = Math.hypot( movement.x, movement.z );
+						const sprint = ( keyboard.keys["shift"] || keyboard.keys["shiftleft"] || keyboard.keys["shiftright"] ) === true;
+						const targetSpeed = sprint ? 9.0 : 6.0;
+						const targetVelocity = moveLength > 0
+							? {
+								x: targetSpeed * movement.x / moveLength,
+								y: velocity.y,
+								z: targetSpeed * movement.z / moveLength,
+							}
+							: {
+								x: velocity.x * 0.82,
+								y: velocity.y,
+								z: velocity.z * 0.82,
+							};
+
+						const groundProbe = ctx.physics.worldCastRayClosest( {
+							origin: transform.position,
+							translation: { x: 0, y: -1.7, z: 0 },
+							maxFraction: 1,
+						} );
+						lastGrounded = groundProbe.hit && groundProbe.normal.y > 0.45;
+						lastGroundDistance = groundProbe.hit ? 1.7 * groundProbe.fraction : Infinity;
+
+						if ( keyboard.keys[" "] && lastGrounded && velocity.y < 1.5 )
+						{
+							targetVelocity.y = 6.5;
+						}
+
+						ctx.physics.setBodyLinearVelocity( characterBody, targetVelocity );
+						ctx.physics.setBodyAwake( characterBody, true );
+
+						lastHorizontalSpeed = Math.hypot( targetVelocity.x, targetVelocity.z );
+						lastVerticalSpeed = targetVelocity.y;
+
+						if ( showDebug )
+						{
+							ctx.physics.addDebugLine(
+								transform.position,
+								offsetPosition( transform.position, {
+									x: 0.25 * targetVelocity.x,
+									y: 0.25 * targetVelocity.y,
+									z: 0.25 * targetVelocity.z,
+								} ),
+								0xc25cff
+							);
+							if ( groundProbe.hit )
+							{
+								ctx.physics.addDebugPoint( groundProbe.point, 0x8fd65c );
+								ctx.physics.addDebugLine(
+									groundProbe.point,
+									offsetPosition( groundProbe.point, {
+										x: 0.6 * groundProbe.normal.x,
+										y: 0.6 * groundProbe.normal.y,
+										z: 0.6 * groundProbe.normal.z,
+									} ),
+									0x8fd65c
+								);
+							}
+						}
+
+						updateCamera( transform.position );
+					},
+
+					buildUI( panel )
+					{
+						panel.addButton( "Toggle Camera (T)", () =>
+						{
+							thirdPerson = !thirdPerson;
+						} );
+						panel.addButton( "Toggle Debug (V)", () =>
+						{
+							showDebug = !showDebug;
+						} );
+					},
+
+					getStatusLines()
+					{
+						if ( loadError != null )
+						{
+							return [ `load error: ${loadError}` ];
+						}
+
+						if ( loading || ready === false )
+						{
+							return [ "loading rigid-body character scene..." ];
+						}
+
+						return [
+							`camera: ${thirdPerson ? "third-person" : "forward-follow"}`,
+							`grounded: ${lastGrounded ? "yes" : "no"} (${Number.isFinite( lastGroundDistance ) ? lastGroundDistance.toFixed( 2 ) : "n/a"})`,
+							`speed: ${lastHorizontalSpeed.toFixed( 2 )} m/s`,
+							`vertical: ${lastVerticalSpeed.toFixed( 2 )} m/s`,
+							`debug: ${showDebug ? "on" : "off"}`,
+						];
+					},
+
+					dispose()
+					{
+						disposed = true;
+						loadToken += 1;
+						keyboard.detach();
+						window.removeEventListener( "keydown", onKeyDown );
 					},
 				};
 			},
