@@ -813,15 +813,18 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_benchmark_helper( int worldHandle, int 
 		return 0;
 	}
 
-	Box3DJsBeginBenchmarkTracking( worldHandle );
 	switch ( helperKind )
 	{
 		case BOX3D_JS_BENCHMARK_HELPER_JOINT_GRID:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			CreateJointGrid( worldId );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		case BOX3D_JS_BENCHMARK_HELPER_WASHER:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			CreateWasher( worldId );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		case BOX3D_JS_BENCHMARK_HELPER_LARGE_WORLD:
@@ -829,18 +832,20 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_create_benchmark_helper( int worldHandle, int 
 			break;
 
 		case BOX3D_JS_BENCHMARK_HELPER_JUNKYARD:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			CreateJunkyard( worldId );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		case BOX3D_JS_BENCHMARK_HELPER_TREES_100:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			CreateTrees100( worldId );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		default:
-			Box3DJsEndBenchmarkTracking();
 			return 0;
 	}
-	Box3DJsEndBenchmarkTracking();
 	g_world_benchmark_helper_kinds[worldHandle] = helperKind;
 	return 1;
 }
@@ -856,11 +861,15 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_step_benchmark_helper( int worldHandle, int h
 	switch ( helperKind )
 	{
 		case BOX3D_JS_BENCHMARK_HELPER_LARGE_WORLD:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			StepLargeWorld( worldId, stepCount );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		case BOX3D_JS_BENCHMARK_HELPER_JUNKYARD:
+			Box3DJsBeginBenchmarkTracking( worldHandle );
 			StepJunkyard( worldId, stepCount );
+			Box3DJsEndBenchmarkTracking();
 			break;
 
 		default:

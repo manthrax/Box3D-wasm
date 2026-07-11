@@ -1631,6 +1631,45 @@ export function createJointSamples( { BodyType } )
 				let motorSpeed = -0.3;
 				let enableMotor = true;
 
+				function rotateVector( rotation, vector )
+				{
+					const x = rotation.x ?? 0;
+					const y = rotation.y ?? 0;
+					const z = rotation.z ?? 0;
+					const w = rotation.w ?? 1;
+					const uvx = y * vector.z - z * vector.y;
+					const uvy = z * vector.x - x * vector.z;
+					const uvz = x * vector.y - y * vector.x;
+					const uuvx = y * uvz - z * uvy;
+					const uuvy = z * uvx - x * uvz;
+					const uuvz = x * uvy - y * uvx;
+					return {
+						x: vector.x + 2 * ( w * uvx + uuvx ),
+						y: vector.y + 2 * ( w * uvy + uuvy ),
+						z: vector.z + 2 * ( w * uvz + uuvz ),
+					};
+				}
+
+				function inverseRotateVector( rotation, vector )
+				{
+					return rotateVector( {
+						x: -( rotation.x ?? 0 ),
+						y: -( rotation.y ?? 0 ),
+						z: -( rotation.z ?? 0 ),
+						w: rotation.w ?? 1,
+					}, vector );
+				}
+
+				function worldToLocalPoint( bodyHandle, point )
+				{
+					const transform = ctx.physics.getBodyTransform( bodyHandle );
+					return inverseRotateVector( transform.rotation, {
+						x: point.x - transform.position.x,
+						y: point.y - transform.position.y,
+						z: point.z - transform.position.z,
+					} );
+				}
+
 				function createGearBody( position, toothCenterRadius )
 				{
 					const hulls = [
@@ -1677,7 +1716,6 @@ export function createJointSamples( { BodyType } )
 				function createChain( topBody, attach )
 				{
 					let previousBody = topBody;
-					let previousPivot = attach;
 					let positionY = attach.y - linkHalfLength;
 
 					for ( let index = 0; index < linkCount; index += 1 )
@@ -1697,17 +1735,23 @@ export function createJointSamples( { BodyType } )
 						ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
 							bodyA: previousBody,
 							bodyB: bodyHandle,
-							anchor: pivot,
+							localFrameA: {
+								position: worldToLocalPoint( previousBody, pivot ),
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
+							localFrameB: {
+								position: worldToLocalPoint( bodyHandle, pivot ),
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
 							enableMotor: true,
 							maxMotorTorque: 0.05,
 						} );
 
 						previousBody = bodyHandle;
-						previousPivot = pivot;
 						positionY -= 2 * linkHalfLength;
 					}
 
-					return { bodyHandle: previousBody, pivot: previousPivot };
+					return { bodyHandle: previousBody };
 				}
 
 				function createDoor( groundHandle, doorPosition, nearLink, farLink )
@@ -1727,7 +1771,14 @@ export function createJointSamples( { BodyType } )
 						ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
 							bodyA: linkInfo.bodyHandle,
 							bodyB: doorHandle,
-							anchor: pivot,
+							localFrameA: {
+								position: worldToLocalPoint( linkInfo.bodyHandle, pivot ),
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
+							localFrameB: {
+								position: { x: 0, y: doorHalfHeight, z: linkInfo.depth },
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
 							enableMotor: true,
 							maxMotorTorque: 50,
 						} );
@@ -1824,7 +1875,14 @@ export function createJointSamples( { BodyType } )
 						driverJoint = ctx.box3d.api.createRevoluteJoint( ctx.physics.worldHandle, {
 							bodyA: groundHandle,
 							bodyB: driverBody,
-							anchor: gearPosition1,
+							localFrameA: {
+								position: worldToLocalPoint( groundHandle, gearPosition1 ),
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
+							localFrameB: {
+								position: { x: 0, y: 0, z: 0 },
+								rotation: { x: 0, y: 0, z: 0, w: 1 },
+							},
 							enableMotor: enableMotor,
 							maxMotorTorque: motorTorque,
 							motorSpeed: motorSpeed,

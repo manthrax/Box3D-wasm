@@ -1318,10 +1318,13 @@ export function createBenchmarkSamples( { BodyType } )
 			key: "large-world",
 			label: "Benchmark / Large World",
 			sceneOptions: { showGround: false, showGrid: false },
-			description: "An exact native-helper port of the large-world benchmark. The wasm helper creates the static floor field and handles the staggered sphere drops, while the browser imports the native bodies for rendering.",
+			description: "An exact native-helper port of the large-world benchmark. The wasm helper owns the enormous static floor field and staggered sphere drops; the browser renders only a lightweight floor proxy plus the tracked dynamic spheres so the benchmark remains practical on the web.",
 			create( ctx )
 			{
 				let stepCount = 0;
+				const floorCellSize = 10;
+				const floorGridCount = 1000;
+				const floorHalfSpan = 0.5 * floorCellSize * floorGridCount;
 
 				return {
 					reset()
@@ -1329,7 +1332,12 @@ export function createBenchmarkSamples( { BodyType } )
 						stepCount = 0;
 						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
 						ctx.box3d.api.createBenchmarkHelper( ctx.physics.worldHandle, ctx.box3d.BenchmarkHelper.largeWorld );
-						ctx.physics.importNativeWorldBodies();
+						ctx.physics.createGroundBox( {
+							position: { x: 0, y: -0.25, z: 0 },
+							size: { hx: floorHalfSpan, hy: 0.25, hz: floorHalfSpan },
+							color: 0x6e7b84,
+							roughness: 0.96,
+						} );
 						ctx.setCameraLookAt( { x: 0, y: 10, z: 250 }, { x: 0, y: 0, z: 0 } );
 					},
 
@@ -1345,7 +1353,7 @@ export function createBenchmarkSamples( { BodyType } )
 						return [
 							`native helper: large world`,
 							`steps: ${stepCount}`,
-							`tracked bodies: ${ctx.physics.getBodyCount()}`,
+							`rendered dynamic drops: ${Math.max( 0, ctx.physics.getBodyCount() - 1 )}`,
 						];
 					},
 				};
