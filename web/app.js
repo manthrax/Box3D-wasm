@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { ConvexGeometry } from "three/addons/geometries/ConvexGeometry.js";
-import loadBox3D from "./generated/active/box3d.js";
+import { getThreadingSupport as detectThreadingSupport, loadBestBox3D } from "./box3d-loader.js";
 import { createBodySamples } from "./samples/bodies.js";
 import { createCompoundSamples } from "./samples/compound.js";
 import { createContinuousSamples } from "./samples/continuous.js";
@@ -36,30 +36,11 @@ const cycleEnabled = [ "1", "true", "yes" ].includes( ( urlParams.get( "cycle" )
 const cycleSeconds = Number.isFinite( Number( urlParams.get( "cycleSeconds" ) ) ) && Number( urlParams.get( "cycleSeconds" ) ) > 0
 	? Number( urlParams.get( "cycleSeconds" ) )
 	: 4;
-const threadingSupport = getThreadingSupport();
+let threadingSupport = detectThreadingSupport();
 const hardwareConcurrency = Math.max( 1, Math.trunc( globalThis.navigator?.hardwareConcurrency ?? 1 ) );
-const maxDemoWorkerCount = threadingSupport.available ? hardwareConcurrency : 1;
+let maxDemoWorkerCount = threadingSupport.available ? hardwareConcurrency : 1;
+let loadedWasmFlavor = "single";
 const STATUS_REFRESH_INTERVAL_MS = 250;
-
-function getThreadingSupport()
-{
-	if ( typeof Worker !== "function" )
-	{
-		return { available: false, reason: "Workers are not available in this browser." };
-	}
-
-	if ( typeof SharedArrayBuffer !== "function" )
-	{
-		return { available: false, reason: "SharedArrayBuffer is unavailable." };
-	}
-
-	if ( globalThis.crossOriginIsolated !== true )
-	{
-		return { available: false, reason: "Cross-origin isolation is required for wasm threads." };
-	}
-
-	return { available: true, reason: "" };
-}
 
 function clampDemoWorkerCount( value )
 {
@@ -2080,6 +2061,7 @@ function renderStatus()
 	const sampleStatusLines = activeSample?.getStatusLines?.() ?? [];
 	const statusLineItems = [
 		`step [${minPhysicsStepMs.toFixed( 2 )}, ${lastPhysicsStepMs.toFixed( 2 )}, ${maxPhysicsStepMs.toFixed( 2 )}] ms`,
+		`wasm flavor: ${loadedWasmFlavor}`,
 		threadingSupport.available ? `workers ${currentDemoWorkerCount}/${maxDemoWorkerCount}` : `workers unavailable`,
 		...sampleStatusLines,
 	];
@@ -2350,7 +2332,12 @@ function mountSamples()
 
 async function main()
 {
-	box3d = await loadBox3D();
+	const loaded = await loadBestBox3D();
+	box3d = loaded.box3d;
+	loadedWasmFlavor = loaded.runtime.flavor;
+	threadingSupport = loaded.runtime.threadingSupport;
+	maxDemoWorkerCount = threadingSupport.available ? hardwareConcurrency : 1;
+	currentDemoWorkerCount = clampDemoWorkerCount( currentDemoWorkerCount );
 	physicsScene = new PhysicsScene( box3d, scene );
 	canvas.addEventListener( "pointerdown", handlePointerDown );
 	canvas.addEventListener( "pointermove", handlePointerMove );

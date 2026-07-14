@@ -9,8 +9,10 @@
     "build": "vite build --configLoader runner",
     "preview": "vite preview --configLoader runner",
     "wasm": "node ./scripts/build-wasm.mjs --flavor single",
+    "wasm:threaded": "node ./scripts/build-wasm.mjs --flavor threaded",
     "wasm:double": "node ./scripts/build-wasm.mjs --flavor double",
     "wasm:sync": "node ./scripts/build-wasm.mjs --flavor single --sync-only",
+    "wasm:sync:threaded": "node ./scripts/build-wasm.mjs --flavor threaded --sync-only",
     "wasm:sync:double": "node ./scripts/build-wasm.mjs --flavor double --sync-only"
   },
   "dependencies": {

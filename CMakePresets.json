@@ -46,6 +46,15 @@
       }
     },
     {
+      "name": "emscripten-release-single",
+      "displayName": "Emscripten Release (Single Thread)",
+      "inherits": "emscripten-release",
+      "binaryDir": "${sourceDir}/build-box3d-wasm-single",
+      "cacheVariables": {
+        "BOX3D_EMSCRIPTEN_PTHREADS": "OFF"
+      }
+    },
+    {
       "name": "emscripten-release-double",
       "displayName": "Emscripten Release (Double Precision)",
       "inherits": "emscripten-release",
@@ -63,6 +72,7 @@
     { "name": "macos-debug",     "configurePreset": "macos",       "configuration": "Debug" },
     { "name": "macos-release",   "configurePreset": "macos",       "configuration": "Release" },
     { "name": "emscripten-release", "configurePreset": "emscripten-release", "targets": [ "box3d_wasm" ] },
+    { "name": "emscripten-release-single", "configurePreset": "emscripten-release-single", "targets": [ "box3d_wasm" ] },
     { "name": "emscripten-release-double", "configurePreset": "emscripten-release-double", "targets": [ "box3d_wasm" ] }
   ]
 }

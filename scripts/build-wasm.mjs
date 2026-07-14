@@ -9,6 +9,11 @@ const syncOnly = args.has( "--sync-only" );
 
 const presets = {
 	single: {
+		configure: "emscripten-release-single",
+		build: "emscripten-release-single",
+		outputDir: path.join( rootDir, "build-box3d-wasm-single", "bin" ),
+	},
+	threaded: {
 		configure: "emscripten-release",
 		build: "emscripten-release",
 		outputDir: path.join( rootDir, "build-box3d-wasm", "bin" ),
@@ -44,7 +49,7 @@ function patchRawLoaderSource( source )
 
 	if ( source.includes( initMemoryNeedle ) === false )
 	{
-		throw new Error( "Unable to patch box3d-raw.js: expected initMemory() signature not found." );
+		return source;
 	}
 
 	return source.replace( initMemoryNeedle, initMemoryReplacement );

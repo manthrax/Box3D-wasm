@@ -27,11 +27,17 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Configure CMake (Wasm)
+      - name: Configure CMake (Threaded Wasm)
         run: emcmake cmake -B build-box3d-wasm -DCMAKE_BUILD_TYPE=Release -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_WASM_MODULE=ON -DBOX3D_EMSCRIPTEN_PTHREADS=ON
 
-      - name: Build WASM Target
+      - name: Build Threaded Wasm Target
         run: cmake --build build-box3d-wasm --config Release
+
+      - name: Configure CMake (Single-Thread Wasm)
+        run: emcmake cmake -B build-box3d-wasm-single -DCMAKE_BUILD_TYPE=Release -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_WASM_MODULE=ON -DBOX3D_EMSCRIPTEN_PTHREADS=OFF
+
+      - name: Build Single-Thread Wasm Target
+        run: cmake --build build-box3d-wasm-single --config Release
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -43,7 +49,9 @@ jobs:
         run: npm ci
 
       - name: Sync WASM artifacts to Web
-        run: npm run wasm:sync
+        run: |
+          npm run wasm:sync
+          npm run wasm:sync:threaded
 
       - name: Build Web App
         run: npm run build

@@ -42,8 +42,7 @@ set_target_properties(box3d_wasm PROPERTIES
 
 target_link_libraries(box3d_wasm PRIVATE box3d)
 
-target_link_options(box3d_wasm PRIVATE
-	"SHELL:-pthread"
+set(BOX3D_WASM_LINK_OPTIONS
 	"--no-entry"
 	"SHELL:-sALLOW_MEMORY_GROWTH=1"
 	"SHELL:-sENVIRONMENT=web,worker"
@@ -51,10 +50,18 @@ target_link_options(box3d_wasm PRIVATE
 	"SHELL:-sMODULARIZE=1"
 	"SHELL:-sEXPORT_ES6=1"
 	"SHELL:-sEXPORT_NAME=Box3DRawModule"
-	"SHELL:-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency"
 	"@${BOX3D_WASM_EXPORTS_RESPONSE}"
 	"SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','getValue','setValue']"
 )
+
+if(BOX3D_EMSCRIPTEN_PTHREADS)
+	list(APPEND BOX3D_WASM_LINK_OPTIONS
+		"SHELL:-pthread"
+		"SHELL:-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency"
+	)
+endif()
+
+target_link_options(box3d_wasm PRIVATE ${BOX3D_WASM_LINK_OPTIONS})
 
 add_custom_command(TARGET box3d_wasm POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
