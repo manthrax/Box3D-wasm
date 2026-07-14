@@ -14,8 +14,14 @@ CMakeUserPresets.json
 *.b3rec
 node_modules/
 dist/
-web/generated/
+web/generated/*
+!web/generated/metadata.json
+!web/generated/single/
+!web/generated/single/**
+!web/generated/threaded/
+!web/generated/threaded/**
 build-box3d-web/
 build-box3d-wasm/
 build-box3d-wasm-double/
+build-box3d-wasm-single/
 tools/emsdk/
