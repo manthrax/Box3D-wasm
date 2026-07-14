@@ -1193,6 +1193,17 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_contact_tuning( int worldHandle, fl
 	b3World_SetContactTuning( worldId, hertz, dampingRatio, contactSpeed );
 }
 
+EMSCRIPTEN_KEEPALIVE void box3d_js_set_world_contact_recycle_distance( int worldHandle, float recycleDistance )
+{
+	b3WorldId worldId = LookupWorld( worldHandle );
+	if ( b3World_IsValid( worldId ) == false )
+	{
+		return;
+	}
+
+	b3World_SetContactRecycleDistance( worldId, recycleDistance );
+}
+
 EMSCRIPTEN_KEEPALIVE int box3d_js_get_world_awake_body_count( int worldHandle )
 {
 	b3WorldId worldId = LookupWorld( worldHandle );
@@ -1352,8 +1363,8 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_ray_closest( int worldHandle, cons
 	outValues10[9] = (double)result.childIndex;
 }
 
-EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, const float* points3, int pointCount, float radius, const float* translation3,
-															 float maxFraction, const int* filter2, int ignoreInitialOverlap,
+EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, const float* origin3, const float* points3, int pointCount, float radius,
+															 const float* translation3, float maxFraction, const int* filter2, int ignoreInitialOverlap,
 															 double* outValues10 )
 {
 	if ( outValues10 == NULL )
@@ -1367,7 +1378,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, co
 	}
 
 	b3WorldId worldId = LookupWorld( worldHandle );
-	if ( b3World_IsValid( worldId ) == false || points3 == NULL || pointCount <= 0 || translation3 == NULL )
+	if ( b3World_IsValid( worldId ) == false || origin3 == NULL || points3 == NULL || pointCount <= 0 || translation3 == NULL )
 	{
 		return;
 	}
@@ -1405,7 +1416,7 @@ EMSCRIPTEN_KEEPALIVE void box3d_js_world_cast_shape_closest( int worldHandle, co
 		clampedFraction * translation3[2],
 	};
 
-	b3World_CastShape( worldId, b3Pos_zero, &proxy, translation, filter, Box3DJsCastClosestCallback, &context );
+	b3World_CastShape( worldId, (b3Pos){ origin3[0], origin3[1], origin3[2] }, &proxy, translation, filter, Box3DJsCastClosestCallback, &context );
 	if ( context.hit == false )
 	{
 		return;
@@ -2342,6 +2353,77 @@ EMSCRIPTEN_KEEPALIVE int box3d_js_clone_and_transform_hull_data( int hullHandle,
 	b3Vec3 scale = scale3 != NULL ? (b3Vec3){ scale3[0], scale3[1], scale3[2] } : b3Vec3_one;
 	b3HullData* clone = b3CloneAndTransformHull( hull, transform, scale );
 	return (int)(intptr_t)clone;
+}
+
+EMSCRIPTEN_KEEPALIVE int box3d_js_clone_and_transform_mesh( int meshHandle, const double* transform7, const float* scale3 )
+{
+	b3MeshData* mesh = LookupMesh( meshHandle );
+	if ( mesh == NULL )
+	{
+		return 0;
+	}
+
+	b3Transform transform = b3Transform_identity;
+	if ( transform7 != NULL )
+	{
+		transform.p = (b3Pos){ transform7[0], transform7[1], transform7[2] };
+		transform.q = (b3Quat){ { (float)transform7[3], (float)transform7[4], (float)transform7[5] }, (float)transform7[6] };
+	}
+
+	b3Vec3 scale = scale3 != NULL ? (b3Vec3){ scale3[0], scale3[1], scale3[2] } : b3Vec3_one;
+	const b3Vec3* sourceVertices = b3GetMeshVertices( mesh );
+	const b3MeshTriangle* sourceTriangles = b3GetMeshTriangles( mesh );
+	const uint8_t* sourceMaterialIndices = b3GetMeshMaterialIndices( mesh );
+	int vertexCount = mesh->vertexCount;
+	int triangleCount = mesh->triangleCount;
+
+	b3Vec3* vertices = malloc( (size_t)vertexCount * sizeof( b3Vec3 ) );
+	int32_t* indices = malloc( (size_t)triangleCount * 3 * sizeof( int32_t ) );
+	uint8_t* materialIndices = sourceMaterialIndices != NULL ? malloc( (size_t)triangleCount * sizeof( uint8_t ) ) : NULL;
+	if ( vertices == NULL || indices == NULL || ( sourceMaterialIndices != NULL && materialIndices == NULL ) )
+	{
+		free( vertices );
+		free( indices );
+		free( materialIndices );
+		return 0;
+	}
+
+	for ( int i = 0; i < vertexCount; ++i )
+	{
+		b3Vec3 vertex = sourceVertices[i];
+		b3Vec3 scaledVertex = { scale.x * vertex.x, scale.y * vertex.y, scale.z * vertex.z };
+		vertices[i] = b3TransformPoint( transform, scaledVertex );
+	}
+
+	for ( int i = 0; i < triangleCount; ++i )
+	{
+		indices[3 * i + 0] = sourceTriangles[i].index1;
+		indices[3 * i + 1] = sourceTriangles[i].index2;
+		indices[3 * i + 2] = sourceTriangles[i].index3;
+		if ( materialIndices != NULL )
+		{
+			materialIndices[i] = sourceMaterialIndices[i];
+		}
+	}
+
+	b3MeshDef def = { 0 };
+	def.vertices = vertices;
+	def.indices = indices;
+	def.materialIndices = materialIndices;
+	def.vertexCount = vertexCount;
+	def.triangleCount = triangleCount;
+	def.identifyEdges = true;
+
+	b3MeshData* clone = b3CreateMesh( &def, NULL, 0 );
+	free( vertices );
+	free( indices );
+	free( materialIndices );
+	if ( clone == NULL )
+	{
+		return 0;
+	}
+
+	return AllocMeshSlot( clone );
 }
 
 EMSCRIPTEN_KEEPALIVE void box3d_js_destroy_hull_data( int hullHandle )

@@ -700,6 +700,7 @@ function createVanillaApi( module )
 
 		worldCastShapeClosest( worldHandle, options = {} )
 		{
+			const origin = options.origin ?? { x: 0, y: 0, z: 0 };
 			const points = options.points ?? [];
 			const translation = options.translation ?? { x: 0, y: 0, z: 0 };
 			const radius = options.radius ?? 0;
@@ -707,19 +708,22 @@ function createVanillaApi( module )
 			const ptr = module._malloc( 10 * 8 );
 			try
 			{
-				withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
-					withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
-						withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
-							module._box3d_js_world_cast_shape_closest(
-								worldHandle,
-								pointsPtr,
-								points.length,
-								radius,
-								translationPtr,
-								options.maxFraction ?? 1,
-								filterPtr,
-								options.ignoreInitialOverlap ? 1 : 0,
-								ptr
+				withOptionalArray( module, [ origin.x ?? 0, origin.y ?? 0, origin.z ?? 0 ], "float", ( originPtr ) =>
+					withOptionalArray( module, flattenVec3Array( points ), "float", ( pointsPtr ) =>
+						withOptionalArray( module, [ translation.x ?? 0, translation.y ?? 0, translation.z ?? 0 ], "float", ( translationPtr ) =>
+							withOptionalArray( module, filterValues == null ? null : filterValues.slice( 0, 2 ), "i32", ( filterPtr ) =>
+								module._box3d_js_world_cast_shape_closest(
+									worldHandle,
+									originPtr,
+									pointsPtr,
+									points.length,
+									radius,
+									translationPtr,
+									options.maxFraction ?? 1,
+									filterPtr,
+									options.ignoreInitialOverlap ? 1 : 0,
+									ptr
+								)
 							)
 						)
 					)
@@ -1954,6 +1958,16 @@ function createVanillaApi( module )
 			return withOptionalArray( module, getTransformValues( options.transform ), "double", ( transformPtr ) =>
 				withOptionalArray( module, [ scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 ], "float", ( scalePtr ) =>
 					module._box3d_js_clone_and_transform_hull_data( hullHandle, transformPtr, scalePtr )
+				)
+			);
+		},
+
+		cloneAndTransformMesh( meshHandle, options = {} )
+		{
+			const scale = options.scale ?? { x: 1, y: 1, z: 1 };
+			return withOptionalArray( module, getTransformValues( options.transform ), "double", ( transformPtr ) =>
+				withOptionalArray( module, [ scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 ], "float", ( scalePtr ) =>
+					module._box3d_js_clone_and_transform_mesh( meshHandle, transformPtr, scalePtr )
 				)
 			);
 		},

@@ -162,6 +162,11 @@ class PhysicsScene
 		);
 	}
 
+	setWorldContactRecycleDistance( recycleDistance )
+	{
+		this.box3d.api.setWorldContactRecycleDistance( this.worldHandle, recycleDistance );
+	}
+
 	getBodyCount()
 	{
 		return this.bodyEntries.size;
@@ -846,12 +851,50 @@ class PhysicsScene
 		}
 
 		const scale = options.scale ?? { x: 1, y: 1, z: 1 };
-		this.box3d.api.addMeshShape( bodyHandle, { ...options, meshHandle: meshResource.handle } );
+		const localTransform = options.localPosition != null || options.localRotation != null
+			? {
+				position: options.localPosition ?? { x: 0, y: 0, z: 0 },
+				rotation: options.localRotation ?? { x: 0, y: 0, z: 0, w: 1 },
+			}
+			: null;
+		let physicsMeshResource = meshResource;
+		let geometrySignature = `${meshResource.signature}:${scale.x}:${scale.y}:${scale.z}`;
+		let geometryFactory = () => this.createScaledMeshGeometry( meshResource.geometryFactory, scale );
+		let localPosition = options.localPosition ?? null;
+		let localRotation = options.localRotation ?? null;
+
+		if ( localTransform != null )
+		{
+			const bakedHandle = this.box3d.api.cloneAndTransformMesh( meshResource.handle, {
+				transform: localTransform,
+				scale,
+			} );
+			const bakedMeshResource = this.registerMeshResource( bakedHandle, {
+				signature: `${meshResource.signature}:baked:${scale.x}:${scale.y}:${scale.z}:${localTransform.position.x}:${localTransform.position.y}:${localTransform.position.z}:${localTransform.rotation.x}:${localTransform.rotation.y}:${localTransform.rotation.z}:${localTransform.rotation.w}`,
+				geometryFactory: () => this.createTransformedMeshGeometry( meshResource.geometryFactory, localTransform, scale ),
+			} );
+			if ( bakedMeshResource != null )
+			{
+				physicsMeshResource = bakedMeshResource;
+				geometrySignature = bakedMeshResource.signature;
+				geometryFactory = bakedMeshResource.geometryFactory;
+				localPosition = null;
+				localRotation = null;
+			}
+		}
+
+		this.box3d.api.addMeshShape( bodyHandle, {
+			...options,
+			meshHandle: physicsMeshResource.handle,
+			scale: physicsMeshResource === meshResource ? scale : { x: 1, y: 1, z: 1 },
+		} );
 		return this.addEntry( bodyHandle, {
 			kind: "mesh",
 			bodyType: options.bodyType ?? this.box3d.BodyType.static,
-			geometrySignature: `${meshResource.signature}:${scale.x}:${scale.y}:${scale.z}`,
-			geometryFactory: () => this.createScaledMeshGeometry( meshResource.geometryFactory, scale ),
+			geometrySignature,
+			geometryFactory,
+			localPosition,
+			localRotation,
 			color: options.color ?? DEFAULT_STATIC_COLOR,
 			roughness: options.roughness ?? 0.72,
 			metalness: options.metalness ?? 0.08,
@@ -1031,6 +1074,27 @@ class PhysicsScene
 	{
 		const geometry = factory().clone();
 		geometry.scale( scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 );
+		geometry.computeVertexNormals();
+		return geometry;
+	}
+
+	createTransformedMeshGeometry( factory, transform, scale = { x: 1, y: 1, z: 1 } )
+	{
+		const geometry = factory().clone();
+		geometry.scale( scale.x ?? 1, scale.y ?? 1, scale.z ?? 1 );
+		geometry.applyQuaternion(
+			new THREE.Quaternion(
+				transform?.rotation?.x ?? 0,
+				transform?.rotation?.y ?? 0,
+				transform?.rotation?.z ?? 0,
+				transform?.rotation?.w ?? 1
+			)
+		);
+		geometry.translate(
+			transform?.position?.x ?? 0,
+			transform?.position?.y ?? 0,
+			transform?.position?.z ?? 0
+		);
 		geometry.computeVertexNormals();
 		return geometry;
 	}

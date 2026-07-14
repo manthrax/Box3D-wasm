@@ -44,6 +44,25 @@ function randomVec3( random, min, max )
 	};
 }
 
+function buildCompactMaterialInfo( rawMaterialIndices )
+{
+	const materialIndexMap = new Map();
+	const materialIndices = rawMaterialIndices.map( ( rawIndex ) =>
+	{
+		const key = Number.isFinite( rawIndex ) ? rawIndex : 0;
+		if ( materialIndexMap.has( key ) === false )
+		{
+			materialIndexMap.set( key, materialIndexMap.size );
+		}
+		return materialIndexMap.get( key );
+	} );
+
+	return {
+		materialIndices,
+		materialCount: Math.max( 1, materialIndexMap.size ),
+	};
+}
+
 export function createCompoundSamples( { BodyType } )
 {
 	return [
@@ -51,7 +70,7 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-simple",
 			label: "Compound / Simple",
 			description:
-				"A first-pass port of the native simple compound demo. The floor is a single static body with one offset hull attached through the new raw body-plus-shapes wasm path, plus a larger falling probe so the contact is easy to read in the browser.",
+				"A close port of the native simple compound demo: one offset box-hull child attached to a static compound body, plus the single falling sphere used by the C sample.",
 			create( ctx )
 			{
 				let sphereHandle = 0;
@@ -60,6 +79,7 @@ export function createCompoundSamples( { BodyType } )
 					reset()
 					{
 						ctx.physics.setWorldOrigin( { x: 0, y: 0, z: 0 } );
+						ctx.physics.setWorldContactRecycleDistance( 0 );
 						ctx.physics.createCompoundBody( {
 							type: BodyType.static,
 							position: { x: 2, y: -1, z: 0 },
@@ -75,8 +95,8 @@ export function createCompoundSamples( { BodyType } )
 
 						sphereHandle = ctx.physics.createSphereBody( {
 							type: BodyType.dynamic,
-							position: { x: 0, y: 8, z: 0 },
-							radius: 0.75,
+							position: { x: 0, y: 2, z: 0 },
+							radius: 0.25,
 							color: 0xd67c42,
 						} );
 
@@ -99,12 +119,10 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-spheres",
 			label: "Compound / Spheres",
 			description:
-				"A browser port of the random-sphere compound sample. The native version is mostly a static compound visualization, so this web version adds a few falling probes to make the collision behavior easier to see.",
+				"A close port of the native random-sphere compound sample. It is intentionally a mostly static visualization of the compound BVH content, just like the C version.",
 			create( ctx )
 			{
 				const sphereCount = 20;
-				const probeCount = 3;
-				const probeHandles = [];
 
 				return {
 					reset()
@@ -131,28 +149,14 @@ export function createCompoundSamples( { BodyType } )
 							spheres,
 						} );
 
-						probeHandles.length = 0;
-						for ( let i = 0; i < probeCount; i += 1 )
-						{
-							probeHandles.push(
-								ctx.physics.createSphereBody( {
-									type: BodyType.dynamic,
-									position: { x: -4 + 4 * i, y: 14 + 2 * i, z: -3 + 3 * i },
-									radius: 0.8,
-									color: 0xd67c42,
-								} )
-							);
-						}
-
 						ctx.setCameraLookAt( { x: 45, y: 30, z: 45 }, { x: 0, y: 0, z: 0 } );
 					},
 
 					getStatusLines()
 					{
-						const firstProbe = ctx.physics.getBodyTransform( probeHandles[0] );
 						return [
 							`compound spheres: ${sphereCount}`,
-							`probe height: ${firstProbe.position.y.toFixed( 2 )}`,
+							`static native-style compound scene`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},
@@ -163,11 +167,10 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-hulls",
 			label: "Compound / Hulls",
 			description:
-				"A port of the native random-hull compound scene, approximated with transformed box hulls. The native sample is largely static, so this version adds visible falling probes to make the compound collision more legible.",
+				"A close port of the native random-hull compound scene using many transformed box hull children, matching the C sample's static compound stress scene.",
 			create( ctx )
 			{
 				const hullCount = 20;
-				const probeHandles = [];
 
 				return {
 					reset()
@@ -199,28 +202,14 @@ export function createCompoundSamples( { BodyType } )
 							boxes,
 						} );
 
-						probeHandles.length = 0;
-						for ( let i = 0; i < 3; i += 1 )
-						{
-							probeHandles.push(
-								ctx.physics.createBoxBody( {
-									type: BodyType.dynamic,
-									position: { x: -5 + 5 * i, y: 16 + 2 * i, z: 4 - 3 * i },
-									size: { hx: 0.75, hy: 0.75, hz: 0.75 },
-									color: 0xd67c42,
-								} )
-							);
-						}
-
 						ctx.setCameraLookAt( { x: 45, y: 30, z: 45 }, { x: 0, y: 0, z: 0 } );
 					},
 
 					getStatusLines()
 					{
-						const firstProbe = ctx.physics.getBodyTransform( probeHandles[0] );
 						return [
 							`compound hulls: ${hullCount}`,
-							`probe height: ${firstProbe.position.y.toFixed( 2 )}`,
+							`static native-style compound scene`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},
@@ -231,7 +220,7 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-tile-floor",
 			label: "Compound / Tile Floor",
 			description:
-				"A broad static tile field built as one multi-shape body. This is a good showcase for the optimized web renderer because thousands of repeated pieces stay in a small number of draw calls.",
+				"A close port of the native tile-floor sample: a large static compound made of many offset box hulls, plus the single falling sphere used in the C demo.",
 			create( ctx )
 			{
 				const gridCount = 50;
@@ -269,8 +258,8 @@ export function createCompoundSamples( { BodyType } )
 
 						ctx.physics.createSphereBody( {
 							type: BodyType.dynamic,
-							position: { x: 3, y: 24, z: 0 },
-							radius: 1,
+							position: { x: 3, y: 12, z: 0 },
+							radius: 0.25,
 							color: 0xd67c42,
 						} );
 
@@ -292,7 +281,7 @@ export function createCompoundSamples( { BodyType } )
 			key: "compound-mesh-tile",
 			label: "Compound / Mesh Tile",
 			description:
-				"A closer browser port of the native mesh-tile sample. Each tile is now represented as a repeated box mesh child on one static compound body, which better matches the original sample's mesh-backed compound layout.",
+				"A close port of the native mesh-tile sample: one shared box mesh instanced four times as children of a single static compound body, with the same sparse scene setup as the C sample.",
 			create( ctx )
 			{
 				const gridCount = 2;
@@ -303,23 +292,24 @@ export function createCompoundSamples( { BodyType } )
 					{
 						const random = createRng( 0x51ced00d );
 						const a = 4;
+						const tileMesh = ctx.physics.createBoxMesh( {
+							center: { x: 0, y: 0, z: 0 },
+							extent: { x: a, y: 0.5 * a, z: a },
+							identifyEdges: true,
+						} );
 						const meshes = [];
 
 						for ( let i = 0; i < gridCount; i += 1 )
 						{
 							for ( let j = 0; j < gridCount; j += 1 )
 							{
-								const center = {
-									x: ( 2 * i - gridCount ) * a,
-									y: randomRange( random, -0.5, 0.25 ) * a,
-									z: ( 2 * j - gridCount ) * a,
-								};
 								meshes.push( {
-									mesh: ctx.physics.createBoxMesh( {
-										center,
-										extent: { x: a, y: 0.5 * a, z: a },
-										identifyEdges: true,
-									} ),
+									mesh: tileMesh,
+									localPosition: {
+										x: ( 2 * i - gridCount ) * a,
+										y: randomRange( random, -0.5, 0.25 ) * a,
+										z: ( 2 * j - gridCount ) * a,
+									},
 									color: 0x6f7f89,
 								} );
 							}
@@ -332,13 +322,6 @@ export function createCompoundSamples( { BodyType } )
 							meshes,
 						} );
 
-						ctx.physics.createSphereBody( {
-							type: BodyType.dynamic,
-							position: { x: 3, y: 14, z: 0 },
-							radius: 0.8,
-							color: 0xd67c42,
-						} );
-
 						ctx.setCameraLookAt( { x: 45, y: 30, z: 45 }, { x: 0, y: 0, z: 0 } );
 					},
 
@@ -346,7 +329,7 @@ export function createCompoundSamples( { BodyType } )
 					{
 						return [
 							`mesh tiles: ${tileCount}`,
-							`rendered as repeated box-mesh children`,
+							`shared mesh instances: ${tileCount}`,
 							`bodies: ${ctx.physics.getBodyCount()}`,
 						];
 					},
@@ -362,7 +345,6 @@ export function createCompoundSamples( { BodyType } )
 			{
 				const gridCount = 64;
 				const worldScale = 4;
-				const probeHandles = [];
 				const worldWidth = 2 * gridCount * worldScale;
 				let loadToken = 0;
 				let loading = false;
@@ -407,10 +389,12 @@ export function createCompoundSamples( { BodyType } )
 							}
 
 							const random = createRng( 0x71aa9e5 );
+							const compactMaterialInfo = buildCompactMaterialInfo( buildingMesh.materialIndices );
 							const buildingMeshResource = ctx.physics.createCustomMesh( {
 								vertices: buildingMesh.vertices,
 								indices: buildingMesh.indices,
-								materialIndices: buildingMesh.materialIndices,
+								materialIndices: compactMaterialInfo.materialIndices,
+								materialCount: compactMaterialInfo.materialCount,
 								identifyEdges: true,
 								weldVertices: true,
 								weldTolerance: 0.001,
@@ -422,6 +406,11 @@ export function createCompoundSamples( { BodyType } )
 							const a = worldScale;
 							const lower = { x: -a, y: a, z: -a };
 							const upper = { x: a, y: 2 * a, z: a };
+							const meshMaterials = Array.from( { length: compactMaterialInfo.materialCount }, ( _, materialIndex ) => ( {
+								friction: materialIndex === 0 ? 0.0 : 0.3,
+								restitution: materialIndex === 1 ? 0.5 : 0.0,
+								userMaterialId: materialIndex + 42,
+							} ) );
 
 							for ( let i = 0; i < gridCount; i += 1 )
 							{
@@ -500,9 +489,8 @@ export function createCompoundSamples( { BodyType } )
 										},
 										localRotation: axisAngleToQuaternion( { x: 0, y: 1, z: 0 }, randomRange( random, -Math.PI, Math.PI ) ),
 										scale,
+										materials: meshMaterials,
 										color: 0x8a8f96,
-										friction: 0.4,
-										restitution: 0.05,
 									} );
 								}
 							}
@@ -523,20 +511,7 @@ export function createCompoundSamples( { BodyType } )
 								spheres,
 							} );
 
-							probeHandles.length = 0;
-							for ( let index = 0; index < 5; index += 1 )
-							{
-								probeHandles.push(
-									ctx.physics.createSphereBody( {
-										type: BodyType.dynamic,
-										position: { x: -60 + 30 * index, y: 38 + 4 * index, z: -55 + 24 * index },
-										radius: 1.2,
-										color: 0xd67c42,
-									} )
-								);
-							}
-
-							ctx.setCameraLookAt( { x: 220, y: 130, z: 220 }, { x: 0, y: 0, z: 0 } );
+							ctx.setCameraLookAt( { x: 45, y: 10, z: 5 }, { x: 0, y: 10, z: 0 } );
 							ready = true;
 							loading = false;
 						} )
@@ -575,7 +550,7 @@ export function createCompoundSamples( { BodyType } )
 
 						const translation = { x: 10, y: -40, z: -5 };
 						const rayResult = ctx.physics.worldCastRayClosest( { origin: rayOrigin, translation } );
-						ctx.physics.addDebugLine( rayOrigin, offsetPoint( rayOrigin, translation ), 0xf0f8ff );
+						ctx.physics.addDebugLine( rayOrigin, offsetPoint( rayOrigin, translation ), 0x5dade2 );
 						if ( rayResult.hit )
 						{
 							const point2 = offsetPoint( rayResult.point, {
@@ -583,8 +558,8 @@ export function createCompoundSamples( { BodyType } )
 								y: 0.5 * rayResult.normal.y,
 								z: 0.5 * rayResult.normal.z,
 							} );
-							ctx.physics.addDebugLine( rayResult.point, point2, 0xffff00 );
-							ctx.physics.addDebugPoint( rayResult.point, 0xf08080 );
+							ctx.physics.addDebugLine( rayResult.point, point2, 0x7dff7d );
+							ctx.physics.addDebugPoint( rayResult.point, 0x4fc3f7 );
 							rayHitLabel = `ray hit tri/child: ${rayResult.triangleIndex} / ${rayResult.childIndex}`;
 						}
 						else
@@ -599,7 +574,7 @@ export function createCompoundSamples( { BodyType } )
 							radius: 0.25,
 							translation,
 						} );
-						ctx.physics.addDebugLine( shapeOrigin, offsetPoint( shapeOrigin, translation ), 0xf0f8ff );
+						ctx.physics.addDebugLine( shapeOrigin, offsetPoint( shapeOrigin, translation ), 0xf5b041 );
 						if ( shapeResult.hit )
 						{
 							const position = offsetPoint( shapeOrigin, {
@@ -612,8 +587,8 @@ export function createCompoundSamples( { BodyType } )
 								y: 0.5 * shapeResult.normal.y,
 								z: 0.5 * shapeResult.normal.z,
 							} );
-							ctx.physics.addDebugLine( shapeResult.point, point2, 0xffff00 );
-							ctx.physics.addDebugPoint( shapeResult.point, 0xf08080 );
+							ctx.physics.addDebugLine( shapeResult.point, point2, 0xff8c42 );
+							ctx.physics.addDebugPoint( shapeResult.point, 0xffc04d );
 							ctx.physics.addDebugPoint( position, 0xda70d6 );
 							shapeHitLabel = `shape hit tri/child: ${shapeResult.triangleIndex} / ${shapeResult.childIndex}`;
 						}
@@ -651,11 +626,10 @@ export function createCompoundSamples( { BodyType } )
 
 					getStatusLines()
 					{
-						const firstProbe = probeHandles.length > 0 ? ctx.physics.getBodyTransform( probeHandles[0] ) : null;
 						return [
 							loading ? "mesh: loading OBJ..." : ready ? "mesh: ready" : loadError == null ? "mesh: pending" : `mesh load failed: ${loadError.message}`,
 							`compound capsules / hulls / meshes / spheres: ${capsuleCount} / ${hullCount} / ${meshCount} / ${sphereCount}`,
-							firstProbe == null ? "probe height: --" : `probe height: ${firstProbe.position.y.toFixed( 2 )}`,
+							`blue line = ray cast, orange line = sphere shape cast, purple point = shape cast center`,
 							`hit child index: ${currentHitChildIndex}`,
 							rayHitLabel,
 							shapeHitLabel,
